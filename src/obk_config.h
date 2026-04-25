@@ -206,6 +206,7 @@
 #define ENABLE_DRIVER_DMX						1
 #define ENABLE_DRIVER_MQTTSERVER				1
 //#define ENABLE_DRIVER_ARISTON					1
+#define ENABLE_DRIVER_HISENSE_AC				1
 
 #elif PLATFORM_BL602
 
@@ -332,6 +333,7 @@
 #endif
 //#define ENABLE_DRIVER_NEO6M					1
 //#define ENABLE_DRIVER_ARISTON					1
+//#define ENABLE_DRIVER_HISENSE_AC				1
 //#define ENABLE_DRIVER_ROOMBA				    1
 
 // ENABLE_I2C_ is a syntax for
@@ -477,6 +479,7 @@
 #define ENABLE_DRIVER_DDP						1
 #if CONFIG_IDF_TARGET_ESP32C6
 #define ENABLE_DRIVER_ARISTON					1
+#define ENABLE_DRIVER_HISENSE_AC				1
 #endif
 #define ENABLE_DRIVER_SSDP						1
 #define ENABLE_DRIVER_CHT83XX					1

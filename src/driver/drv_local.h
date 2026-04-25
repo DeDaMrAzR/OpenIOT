@@ -259,6 +259,13 @@ void TCL_UART_RunEverySecond(void);
 void TCL_AppendInformationToHTTPIndexPage(http_request_t *request, int bPreState);
 void TCL_DoDiscovery(const char *topic);
 
+void HisenseAC_Init(void);
+void HisenseAC_Shutdown(void);
+void HisenseAC_OnEverySecond(void);
+void HisenseAC_RunFrame(void);
+void HisenseAC_AppendInformationToHTTPIndexPage(http_request_t *request, int bPreState);
+void HisenseAC_OnHassDiscovery(const char *topic);
+
 void Ariston_Init(void);
 void Ariston_OnEverySecond(void);
 void Ariston_AppendInformationToHTTPIndexPage(http_request_t *request, int bPreState);

@@ -95,6 +95,22 @@ static driver_t g_drivers[] = {
 	false,                                      // loaded
 	},
 #endif
+#if ENABLE_DRIVER_HISENSE_AC
+	//drvdetail:{"name":"HisenseAC",
+	//drvdetail:"title":"Hisense AC",
+	//drvdetail:"descr":"Skeleton driver shell for Hisense AC UART protocol development",
+	//drvdetail:"requires":""}
+	{ "HisenseAC",                           // Driver Name
+	HisenseAC_Init,                          // Init
+	HisenseAC_OnEverySecond,                 // onEverySecond
+	HisenseAC_AppendInformationToHTTPIndexPage, // appendInformationToHTTPIndexPage
+	HisenseAC_RunFrame,                      // runQuickTick
+	HisenseAC_Shutdown,                      // stopFunction
+	NULL,                                    // onChannelChanged
+	HisenseAC_OnHassDiscovery,               // onHassDiscovery
+	false,                                   // loaded
+	},
+#endif
 #if ENABLE_DRIVER_ARISTON
 	//drvdetail:{"name":"Ariston",
 	//drvdetail:"title":"Ariston Boiler",

@@ -166,6 +166,12 @@ typedef long BaseType_t;
 #endif
 #define DEVICENAME_PREFIX_FULL "Open" PLATFORM_MCU_NAME
 #define DEF_MQTT_GROUP "esp"
+#elif PLATFORM_SV6X66
+#define DEVICENAME_PREFIX_FULL "OpenSV6X66"
+#define DEVICENAME_PREFIX_SHORT "sv6"
+#define PLATFORM_MCU_NAME "SV6X66"
+#define MANUFACTURER "iComm Semi"
+#define DEF_MQTT_GROUP "sv6x66s"
 #elif PLATFORM_TR6260
 #define DEVICENAME_PREFIX_FULL "OpenTR6260"
 #define DEVICENAME_PREFIX_SHORT "tr6260"
@@ -303,6 +309,8 @@ This platform is not supported, error!
 #define USER_SW_VER "LN8825_Test"
 #elif defined(PLATFORM_ESPIDF)
 #define USER_SW_VER PLATFORM_MCU_NAME "_Test"
+#elif defined(PLATFORM_SV6X66)
+#define USER_SW_VER "SV6X66_Test"
 #elif defined(PLATFORM_TR6260)
 #define USER_SW_VER "TR6260_Test"
 #elif defined(PLATFORM_RTL87X0C)
@@ -712,6 +720,96 @@ OSStatus rtos_suspend_thread(beken_thread_t* thread);
 #define xPortGetFreeHeapSize() esp_get_free_heap_size()
 #endif
 
+#elif PLATFORM_SV6X66
+#include <stdint.h>
+#include <stddef.h>
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
+#include "queue.h"
+#include "osal.h"
+#include "lwip/err.h"
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
+#include "lwip/dns.h"
+#include "lwip/sys.h"
+
+typedef unsigned int UINT32;
+typedef int OSStatus;
+typedef void *beken_thread_arg_t;
+typedef TaskHandle_t beken_thread_t;
+typedef void (*beken_thread_function_t)(beken_thread_arg_t);
+#define kNoErr 0
+#define BEKEN_DEFAULT_WORKER_PRIORITY 2
+#define BEKEN_APPLICATION_PRIORITY 2
+#define ASSERT(x) configASSERT(x)
+#define bk_printf SV6X66_Printf
+#define rtos_delay_milliseconds OS_MsDelay
+#define delay_ms OS_MsDelay
+#define usleep HAL_Delay_us
+#define MQTT_BENCHMARK_THREAD_PRIORITY 2
+#define MQTT_BENCHMARK_THREAD_NAME "mqtt_benchmark"
+#define MQTT_BENCHMARK_STACK_BYTES 4096
+#define QUICK_THREAD_PRIORITY 3
+#define QUICK_THREAD_STACK_BYTES 2048
+#ifndef close
+#define close(fd) lwip_close(fd)
+#endif
+#define lwip_close_force(fd) lwip_close(fd)
+#define OBK_OTA_EXTENSION ".sv6ota"
+#ifndef LWIP_CONST_CAST
+#define LWIP_CONST_CAST(type, value) ((type)(value))
+#endif
+#ifndef LWIP_DNS_ADDRTYPE_IPV4
+#define LWIP_DNS_ADDRTYPE_IPV4 0
+#endif
+err_t SV6X66_DnsLookup(const char *, ip_addr_t *);
+#define dns_gethostbyname_addrtype(name, address, callback, arg, type) SV6X66_DnsLookup(name, address)
+#include "sv6x66_alloc.h"
+#define GLOBAL_INT_DECLARATION() OS_DeclareCritical()
+#define GLOBAL_INT_DISABLE() OS_EnterCritical()
+#define GLOBAL_INT_RESTORE() OS_ExitCritical()
+
+#define SV6X66_FLASH_BASE 0x30000000u
+#define SV6X66_FLASH_SIZE 0x00200000u
+#define SV6X66_BANK_A 0x0000B000u
+#define SV6X66_BANK_B 0x000A6000u
+#define SV6X66_BANK_SIZE 0x0009B000u
+#define SV6X66_SELECTOR 0x00004000u
+
+OSStatus rtos_create_thread(beken_thread_t *, uint8_t, const char *, beken_thread_function_t, uint32_t, beken_thread_arg_t);
+OSStatus rtos_delete_thread(beken_thread_t *);
+OSStatus rtos_suspend_thread(beken_thread_t *);
+int SV6X66_Printf(const char *, ...);
+void SV6X66_LogEnable(int);
+int SV6X66_LogUartSetBaud(void);
+uint32_t SV6X66_RunningBank(void);
+int SV6X66_PinAvailable(int pin);
+int SV6X66_ProfileValid(void);
+int SV6X66_FactoryWindow(void);
+void SV6X66_WifiInit(void);
+void SV6X66_WifiPoll(void);
+struct netif;
+/* Static callbacks execute on TCPIP; cleanup also runs before SDK netif free. */
+void SV6X66_MDNS_Dispatch(void (*callback)(void), void (*cleanup)(void), int start);
+struct netif *SV6X66_MDNS_GetStaNetif(void);
+int SV6X66_MDNS_BeforeWifiStop(void);
+#define SV6X66_WIFI_SCAN_MAX 20
+typedef struct {
+	char ssid[33];
+	uint8_t channel;
+	int16_t rssi;
+	const char *security;
+} SV6X66_WifiScanResult;
+typedef enum {
+	SV6X66_SCAN_OK,
+	SV6X66_SCAN_BUSY,
+	SV6X66_SCAN_TIMEOUT,
+	SV6X66_SCAN_UNSUPPORTED,
+	SV6X66_SCAN_FAILED
+} SV6X66_WifiScanStatus;
+SV6X66_WifiScanStatus SV6X66_WifiScan(SV6X66_WifiScanResult *, unsigned int, unsigned int *);
+void SV6X66_StorageInit(void);
 #elif PLATFORM_TR6260
 
 #include "FreeRTOS.h"
@@ -1253,7 +1351,7 @@ int strcpy_safe_checkForChanges(char *tg, const char *src, int tgMaxLen);
 void urldecode2_safe(char *dst, const char *srcin, int maxDstLen);
 int strIsInteger(const char *s);
 
-#if !defined(PLATFORM_ESPIDF) && !defined(PLATFORM_TR6260) && !defined(PLATFORM_ECR6600) && !defined(PLATFORM_BL602) && \
+#if !defined(PLATFORM_ESPIDF) && !defined(PLATFORM_TR6260) && !defined(PLATFORM_SV6X66) && !defined(PLATFORM_ECR6600) && !defined(PLATFORM_BL602) && \
 	!defined(PLATFORM_ESP8266) && !defined(PLATFORM_W800) && !defined(PLATFORM_ARMINO)
 
 const char* strcasestr(const char* str1, const char* str2);

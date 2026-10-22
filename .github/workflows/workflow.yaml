@@ -51,7 +51,7 @@ jobs:
           fi
           echo "new_release=${{ steps.semantic.outputs.new_release_published }}" >> $GITHUB_OUTPUT
           echo "short_ref=${BRANCHTRANSLATED}" >> $GITHUB_OUTPUT
-          echo "sha_short=SHA-$(git rev-parse --short=12 HEAD)" >> $GITHUB_OUTPUT
+          echo "sha_short=$(git rev-parse --short=12 HEAD)" >> $GITHUB_OUTPUT
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
   build2:
@@ -99,7 +99,7 @@ jobs:
     - name: Upload build assets
       uses: actions/upload-artifact@v6
       with:
-        name: ${{ env.APP_NAME }}_${{ needs.refs.outputs.version }}_sim
+        name: obkSimulator_${{ needs.refs.outputs.sha_short }}
         path: output/${{ needs.refs.outputs.version }}/obkSimulator_${{ needs.refs.outputs.version }}.zip
 
   build_asan:
@@ -181,6 +181,8 @@ jobs:
             variant: default
             gcc: 10.3-2021.10
           - platform: OpenTR6260
+            variant: default
+          - platform: OpenSV6X66
             variant: default
           - platform: OpenRTL8710A
             variant: default
@@ -285,7 +287,7 @@ jobs:
         uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
-        if: ${{ matrix.platform == 'OpenBL602' || matrix.platform == 'OpenRTL8721DA' || matrix.platform == 'OpenRTL8720E' || matrix.platform == 'OpenRDA5981' }}
+        if: ${{ matrix.platform == 'OpenSV6X66' || matrix.platform == 'OpenBL602' || matrix.platform == 'OpenRTL8721DA' || matrix.platform == 'OpenRTL8720E' || matrix.platform == 'OpenRDA5981' }}
         with:
           python-version: '3.10'
           architecture: 'x64'
@@ -320,7 +322,7 @@ jobs:
       - name: Save build assets
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ env.APP_NAME }}_${{ needs.refs.outputs.version }}_${{ matrix.platform }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}
+          name: ${{ matrix.platform }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}_${{ needs.refs.outputs.sha_short }}
           path: |
             output/${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}/${{ matrix.platform }}_UA_${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}.bin
             output/${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}/${{ matrix.platform }}_Tuya_UA_${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}.bin
@@ -333,6 +335,10 @@ jobs:
             output/${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}/${{ matrix.platform }}_${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}.rbl
             output/${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}/${{ matrix.platform }}_${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}.img
             output/${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}/${{ matrix.platform }}_${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}.bin
+            output/${{ needs.refs.outputs.version }}/${{ matrix.platform }}_${{ needs.refs.outputs.version }}.sv6ota
+            output/${{ needs.refs.outputs.version }}/${{ matrix.platform }}_${{ needs.refs.outputs.version }}_A.bank.bin
+            output/${{ needs.refs.outputs.version }}/${{ matrix.platform }}_${{ needs.refs.outputs.version }}_B.bank.bin
+            output/${{ needs.refs.outputs.version }}/${{ matrix.platform }}_${{ needs.refs.outputs.version }}.manifest.json
             output/${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}/${{ matrix.platform }}_${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}.fls
             output/${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}/${{ matrix.platform }}_${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}_ota.img
             output/${{ needs.refs.outputs.version }}/OpenXR806_${{ needs.refs.outputs.version }}_DCDC.img
@@ -456,7 +462,7 @@ jobs:
       - name: Save build assets
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ env.APP_NAME }}_${{ needs.refs.outputs.version }}_${{ matrix.platform }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}
+          name: ${{ matrix.platform }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}_${{ needs.refs.outputs.sha_short }}
           path: |
             output/${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}/${{ matrix.platform }}_${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}.img
             output/${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}/${{ matrix.platform }}_${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}.factory.bin
@@ -491,7 +497,7 @@ jobs:
       - name: Save build assets
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ env.APP_NAME }}_${{ needs.refs.outputs.version }}_${{ matrix.platform }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}
+          name: ${{ matrix.platform }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}_${{ needs.refs.outputs.sha_short }}
           path: |
             output/${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}/${{ matrix.platform }}_${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}.bin
             output/${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}/${{ matrix.platform }}_${{ needs.refs.outputs.version }}${{ matrix.variant != 'default' && '_' || '' }}${{ matrix.variant != 'default' && matrix.variant || '' }}_ota.img
@@ -506,21 +512,21 @@ jobs:
       - name: Merge Artifacts
         uses: actions/upload-artifact/merge@v6
         with:
-          name: ${{ env.APP_NAME }}_${{ needs.refs.outputs.version }}
+          name: ${{ env.APP_NAME }}_${{ needs.refs.outputs.sha_short }}
           #delete-merged: true
 
   release:
     name: Semantic Release Images and Artifacts
     runs-on: ubuntu-22.04
     needs: [merge, refs]
-    if: always() && needs.refs.outputs.new_release == 'true' && (github.ref == 'refs/heads/main' || github.ref_name == 'alpha')
+    if: always() && needs.refs.outputs.new_release == 'true' && (github.ref == 'refs/heads/main' || github.ref_name == 'alpha') && github.repository != 'DeDaMrAzR/OpenIOT'
     steps:
       - name: Source checkout
         uses: actions/checkout@v5
       - name: Fetch build assets
         uses: actions/download-artifact@v7
         with:
-          name: ${{ env.APP_NAME }}_${{ needs.refs.outputs.version }}
+          name: ${{ env.APP_NAME }}_${{ needs.refs.outputs.sha_short }}
           path: output/${{ needs.refs.outputs.version }}
       - name: Run Semantic Release
         id: semantic

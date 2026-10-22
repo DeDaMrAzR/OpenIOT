@@ -44,3 +44,6 @@ enc_temp_folder/**
 *.i
 *.ii
 *.s
+
+# Local reverse-engineering evidence and manual validation reports.
+/TEST/

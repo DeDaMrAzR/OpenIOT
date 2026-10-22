@@ -987,6 +987,17 @@ void PIN_SetPinRoleForPinIndex(int index, int role) {
 		addLogAdv(LOG_ERROR, LOG_FEATURE_CFG, "PIN_SetPinRoleForPinIndex: Pin index %i out of range <0,%i).", index, PLATFORM_GPIO_MAX);
 		return;
 	}
+#if PLATFORM_SV6X66
+	if (!SV6X66_PinAvailable(index)) {
+		/* None clears a reserved pin without touching its recovery/flash mux. */
+		if (g_cfg.pins.roles[index] != IOR_None) {
+			g_cfg.pins.roles[index] = IOR_None;
+			g_cfg_pendingChanges++;
+		}
+		setGPIActive(index, 0, 0);
+		return;
+	}
+#endif
 #if 0
 	if (index == PIN_UART1_RXD) {
 		// default role to None in order to fix broken config

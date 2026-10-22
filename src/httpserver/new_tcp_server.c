@@ -285,7 +285,7 @@ static void tcp_server_thread(beken_thread_arg_t arg)
 			sock[new_idx].fd = accept(listen_sock, (struct sockaddr*)&source_addr, &addr_len);
 
 #if LWIP_SO_RCVTIMEO
-#if LWIP_SO_SNDRCVTIMEO_NONSTANDARD
+#if PLATFORM_SV6X66 || LWIP_SO_SNDRCVTIMEO_NONSTANDARD
 			int tv = 30 * 1000;
 #else
 			struct timeval tv;

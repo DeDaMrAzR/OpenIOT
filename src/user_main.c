@@ -70,6 +70,8 @@ extern void WFI(void);
 #include "esp_timer.h"
 #elif PLATFORM_ECR6600
 #include "hal_adc.h"
+#elif PLATFORM_SV6X66
+#include "rf/rf_api.h"
 #endif
 
 int g_secondsElapsed = 0;
@@ -126,7 +128,7 @@ void Main_ForceUnsafeInit();
 #elif PLATFORM_BL602 || PLATFORM_REALTEK || PLATFORM_XRADIO || PLATFORM_W600 || PLATFORM_RDA5981 || PLATFORM_LN8825 \
 	|| PLATFORM_LN882H || PLATFORM_BL_NEW || PLATFORM_GD32VW553 || PLATFORM_ARMINO
 #define WFI_FUNC() __asm volatile("wfi")
-#elif PLATFORM_TR6260 || PLATFORM_ECR6600
+#elif PLATFORM_SV6X66 || PLATFORM_TR6260 || PLATFORM_ECR6600
 #define WFI_FUNC() __asm volatile("standby no_wake_grant")
 #elif PLATFORM_W800
 #define WFI_FUNC __WFI
@@ -267,7 +269,7 @@ int LWIP_GetActiveSockets() {
 }
 #endif
 
-#if PLATFORM_BL602 || PLATFORM_W800 || PLATFORM_W600 || PLATFORM_LN882H || PLATFORM_LN8825 \
+#if PLATFORM_SV6X66 || PLATFORM_BL602 || PLATFORM_W800 || PLATFORM_W600 || PLATFORM_LN882H || PLATFORM_LN8825 \
 	|| PLATFORM_ESPIDF || PLATFORM_TR6260 || PLATFORM_REALTEK || PLATFORM_ECR6600 \
 	|| PLATFORM_XRADIO || PLATFORM_ESP8266 || PLATFORM_BL_NEW || PLATFORM_GD32VW553
 
@@ -278,7 +280,18 @@ OSStatus rtos_create_thread(beken_thread_t* thread,
 	OSStatus err = kNoErr;
 
 
+#if PLATFORM_SV6X66
+	uint32_t words = stack_size / sizeof(StackType_t) + (stack_size % sizeof(StackType_t) != 0);
+	/* Common OBK callers can request priorities beyond the SDK limit.
+	 * Retain this port's existing application cap at priority 3. */
+	if (priority > 3)
+		priority = 3;
+	if (!function || words > UINT16_MAX || words < configMINIMAL_STACK_SIZE)
+		return -1;
+	err = xTaskCreate(function, name, (uint16_t)words, arg, priority, thread);
+#else
 	err = xTaskCreate(function, name, stack_size / sizeof(StackType_t), arg, priority, thread);
+#endif
 	/*
 	 BaseType_t xTaskCreate(
 								  TaskFunction_t pvTaskCode,
@@ -780,6 +793,10 @@ void Main_OnEverySecond()
 		g_wifi_temperature = HAL_ADC_Temp();
 #elif PLATFORM_ECR6600
 		g_wifi_temperature = hal_adc_tempsensor();
+#elif PLATFORM_SV6X66
+		int temperature = (int)g_wifi_temperature;
+		if (get_current_temperature(&temperature) == 0)
+			g_wifi_temperature = temperature;
 #elif PLATFORM_ARMINO
 		uint32_t adc_code = 0;
 		temp_detect_get_temperature(&adc_code);
@@ -1223,12 +1240,18 @@ void QuickTick(void* param)
 #else
 #define QT_STACK_SIZE 2048
 #endif
+#ifndef QUICK_THREAD_PRIORITY
+#define QUICK_THREAD_PRIORITY 15
+#endif
+#ifndef QUICK_THREAD_STACK_BYTES
+#define QUICK_THREAD_STACK_BYTES (QT_STACK_SIZE * sizeof(StackType_t))
+#endif
 
 ////////////////////////////////////////////////////////
 // this is the bit which runs the quick tick timer
 #if WINDOWS
 
-#elif PLATFORM_BL602 || PLATFORM_W600 || PLATFORM_W800 || PLATFORM_TR6260 || defined(PLATFORM_REALTEK) || PLATFORM_ECR6600 \
+#elif PLATFORM_SV6X66 || PLATFORM_BL602 || PLATFORM_W600 || PLATFORM_W800 || PLATFORM_TR6260 || defined(PLATFORM_REALTEK) || PLATFORM_ECR6600 \
 	|| PLATFORM_ESP8266 || PLATFORM_ESPIDF || PLATFORM_XRADIO || PLATFORM_LN882H || PLATFORM_TXW81X || PLATFORM_RDA5981 || PLATFORM_LN8825 \
 	|| PLATFORM_BL_NEW || PLATFORM_GD32VW553
 void quick_timer_thread(void* param)
@@ -1245,9 +1268,9 @@ void QuickTick_StartThread(void)
 {
 #if WINDOWS
 
-#elif PLATFORM_BL602 || PLATFORM_W600 || PLATFORM_W800 || PLATFORM_TR6260 || defined(PLATFORM_REALTEK) || PLATFORM_ECR6600 \
+#elif PLATFORM_SV6X66 || PLATFORM_BL602 || PLATFORM_W600 || PLATFORM_W800 || PLATFORM_TR6260 || defined(PLATFORM_REALTEK) || PLATFORM_ECR6600 \
 	|| PLATFORM_ESP8266 || PLATFORM_ESPIDF || PLATFORM_XRADIO || PLATFORM_LN882H || PLATFORM_LN8825 || PLATFORM_BL_NEW || PLATFORM_GD32VW553
-	xTaskCreate(quick_timer_thread, "quick", QT_STACK_SIZE, NULL, 15, NULL);
+	rtos_create_thread(NULL, QUICK_THREAD_PRIORITY, "quick", quick_timer_thread, QUICK_THREAD_STACK_BYTES, NULL);
 #elif PLATFORM_TXW81X
 	os_task_create("quick", quick_timer_thread, NULL, 15, 0, NULL, QT_STACK_SIZE);
 #elif PLATFORM_RDA5981

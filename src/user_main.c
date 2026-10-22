@@ -67,6 +67,8 @@ extern void WFI(void);
 #include "esp_timer.h"
 #elif PLATFORM_ECR6600
 #include "hal_adc.h"
+#elif PLATFORM_SV6X66
+#include "rf/rf_api.h"
 #endif
 
 int g_secondsElapsed = 0;
@@ -788,6 +790,10 @@ void Main_OnEverySecond()
 		g_wifi_temperature = HAL_ADC_Temp();
 #elif PLATFORM_ECR6600
 		g_wifi_temperature = hal_adc_tempsensor();
+#elif PLATFORM_SV6X66
+		int temperature = (int)g_wifi_temperature;
+		if (get_current_temperature(&temperature) == 0)
+			g_wifi_temperature = temperature;
 #elif PLATFORM_ARMINO
 		uint32_t adc_code = 0;
 		temp_detect_get_temperature(&adc_code);

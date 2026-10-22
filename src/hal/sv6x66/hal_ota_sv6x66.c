@@ -1,6 +1,7 @@
 #if PLATFORM_SV6X66
 
 #include "new_common.h"
+#include "new_cfg.h"
 #include "../../../platforms/SV6X66/obk/ota.h"
 #include "../../../platforms/SV6X66/obk/flash.h"
 #include "crypto/cryptoApi.h"
@@ -93,7 +94,7 @@ int SV6X66_UpdateData(const uint8_t *data, size_t length) {
 				for (sector = 0; sector < SV6X66_BANK_SIZE; sector += 4096) {
 					if (SV6X66_FlashErase(bank + sector))
 						goto fail;
-					taskYIELD();
+					rtos_delay_milliseconds(10);
 				}
 				update.erased = 1;
 				if (SV6X66_FlashWrite(bank, update.prefix, 4))
@@ -102,6 +103,8 @@ int SV6X66_UpdateData(const uint8_t *data, size_t length) {
 			}
 			if (SV6X66_FlashWrite(bank + update.done[index], data, n))
 				goto fail;
+			if ((update.done[index] + n) / 4096 != update.done[index] / 4096)
+				rtos_delay_milliseconds(10);
 		}
 		psMd5Update(&update.digest[index], data, n);
 		update.done[index] += n;
@@ -171,15 +174,17 @@ int http_rest_post_flash(http_request_t *request, int startaddr, int maxaddr) {
 	size_t have = 0;
 	int received = request->bodylen, remaining = request->contentLength, owned = 0;
 	const uint8_t *data = (const uint8_t *)request->bodystart;
+	const char *stage = "HTTP content length";
 	(void)startaddr;
 	(void)maxaddr;
 	if (!SV6X66_ProfileValid())
-		return http_rest_error(request, -1, "CKW04 physical flash/bank profile validation failed");
+		return http_rest_error(request, 500, "CKW04 physical flash/bank profile validation failed");
 	if (remaining < 84 || remaining > 84 + 2 * SV6X66_BANK_SIZE || received < 0 || received > remaining)
 		goto fail;
 	while (have < 84) {
 		size_t n = 84 - have;
 		if (!received) {
+			stage = "HTTP header receive";
 			received = recv(request->fd, buffer, sizeof(buffer), 0);
 			data = buffer;
 			if (received <= 0 || received > remaining)
@@ -193,9 +198,11 @@ int http_rest_post_flash(http_request_t *request, int startaddr, int maxaddr) {
 		received -= n;
 		remaining -= n;
 	}
+	stage = "HTTP update begin";
 	if (SV6X66_UpdateBegin(header, 0))
 		goto fail;
 	owned = 1;
+	stage = "HTTP bundle length";
 	if (SV6X66_UpdateRemaining() != (uint32_t)remaining)
 		goto fail;
 	OTA_ResetProgress();
@@ -204,20 +211,27 @@ int http_rest_post_flash(http_request_t *request, int startaddr, int maxaddr) {
 	while (remaining) {
 		if (!received) {
 			int n = remaining < (int)sizeof(buffer) ? remaining : sizeof(buffer);
+			stage = "HTTP body receive";
 			received = recv(request->fd, buffer, n, 0);
 			data = buffer;
 			if (received <= 0 || received > remaining)
 				goto fail;
 		}
+		stage = "HTTP update data";
 		if (SV6X66_UpdateData(data, received))
 			goto fail;
 		remaining -= received;
 		OTA_IncrementProgress(received);
 		received = 0;
 	}
-	if (SV6X66_UpdateVerify() || SV6X66_UpdateCommit())
+	stage = "HTTP update verify";
+	if (SV6X66_UpdateVerify())
+		goto fail;
+	stage = "HTTP selector commit";
+	if (SV6X66_UpdateCommit())
 		goto fail;
 	owned = 0;
+	CFG_IncrementOTACount();
 	http_setup(request, httpMimeTypeJson);
 	poststr(request, "{\"status\":\"verified\"}");
 	poststr(request, NULL);
@@ -227,7 +241,7 @@ fail:
 	if (owned)
 		SV6X66_UpdateAbort();
 	OTA_ResetProgress();
-	return http_rest_error(request, -1, "SV6X66 image, transport or flash verification failed");
+	return http_rest_error(request, 500, (char *)stage);
 }
 
 #endif

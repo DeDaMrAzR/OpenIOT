@@ -1,6 +1,7 @@
 #if PLATFORM_SV6X66
 
 #include "new_common.h"
+#include "../../cmnds/cmd_public.h"
 #include "flash.h"
 #include "hsuart/drv_hsuart.h"
 #include "uart/drv_uart.h"
@@ -8,9 +9,19 @@
 #include "pinmux/drv_pinmux.h"
 #include "wdt/drv_wdt.h"
 #include "sys/xip.h"
+#include "sys/backtrace.h"
 
 extern void Main_Init(void);
 extern void Main_OnEverySecond(void);
+
+static commandResult_t CMD_SV6X66SysInfo(const void *context, const char *cmd, const char *args, int flags) {
+	(void)context;
+	(void)cmd;
+	(void)args;
+	(void)flags;
+	OS_SysInfo();
+	return CMD_RES_OK;
+}
 
 static void application(void *unused) {
 	uint32_t deadline;
@@ -28,6 +39,7 @@ static void application(void *unused) {
 	SV6X66_StorageInit();
 	SV6X66_WifiInit();
 	Main_Init();
+	CMD_RegisterCommand("SV6X66SysInfo", CMD_SV6X66SysInfo, NULL);
 	deadline = OS_GetSysTick();
 	for (;;) {
 		SV6X66_WifiPoll();
@@ -88,6 +100,8 @@ void lowpower_post_sleep_hook(void) {
 }
 void vAssertCalled(const char *function, int line) {
 	SV6X66_Printf("RTOS assertion %s:%d\r\n", function, line);
+	OS_SysInfo();
+	print_callstack();
 	for (;;) {
 	}
 }

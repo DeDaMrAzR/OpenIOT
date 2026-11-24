@@ -139,6 +139,17 @@ char g_enable_pins = 0;
 //int g_channelStates;
 int g_channelValues[CHANNEL_MAX] = { 0 };
 float g_channelValuesFloats[CHANNEL_MAX] = { 0 };
+static volatile unsigned char s_channelHasValue[CHANNEL_MAX];
+
+int CHANNEL_HasValue(int ch) {
+	return ch >= 0 && ch < CHANNEL_MAX && s_channelHasValue[ch];
+}
+
+void CHANNEL_InvalidateValue(int ch) {
+	if (ch >= 0 && ch < CHANNEL_MAX) {
+		s_channelHasValue[ch] = 0;
+	}
+}
 
 pinButton_s g_buttons[PLATFORM_GPIO_MAX];
 
@@ -1388,6 +1399,7 @@ static void Channel_OnChanged(int ch, int prevValue, int iFlags) {
 	//bOn = BIT_CHECK(g_channelStates,ch);
 	iVal = g_channelValues[ch];
 	g_channelValuesFloats[ch] = (float)iVal;
+	s_channelHasValue[ch] = 1;
 	bOn = iVal > 0;
 
 #if ENABLE_I2C
@@ -1437,6 +1449,7 @@ static void Channel_OnChanged(int ch, int prevValue, int iFlags) {
 }
 void CFG_ApplyChannelStartValues() {
 	int i, iValue;
+	memset((void *)s_channelHasValue, 0, sizeof(s_channelHasValue));
 	for (i = 0; i < CHANNEL_MAX; i++) {
 		iValue = g_cfg.startChannelValues[i];
 		if (iValue == -1) {
@@ -1683,10 +1696,15 @@ void CHANNEL_ClearAllChannels() {
 
 void CHANNEL_Set_FloatPWM(int ch, float fVal, int iFlags) {
 	int i;
-	float prevValue = g_channelValuesFloats[ch];
+	float prevValue;
+	if (ch < 0 || ch >= CHANNEL_MAX) {
+		return;
+	}
+	prevValue = g_channelValuesFloats[ch];
 
 	g_channelValues[ch] = (int)fVal;
 	g_channelValuesFloats[ch] = fVal;
+	s_channelHasValue[ch] = 1;
 
 	for (i = 0; i < PLATFORM_GPIO_MAX; i++) {
 		if (g_cfg.pins.channels[i] == ch) {
@@ -1749,6 +1767,8 @@ void CHANNEL_Set_Ex(int ch, int iVal, int iFlags, int ausemovingaverage) {
 	prevValue = g_channelValues[ch];
 	if (bForce == 0) {
 		if (prevValue == iVal) {
+			// Cached integer/float values are already coherent, including zero.
+			s_channelHasValue[ch] = 1;
 			if (bSilent == 0) {
 				addLogAdv(LOG_INFO, LOG_FEATURE_GENERAL, "No change in channel %i (still set to %i) - ignoring", ch, prevValue);
 			}
@@ -2351,6 +2371,10 @@ void PIN_ticks(void* param)
 				// debouncing
 				if (value) {
 					if (g_times[i] > debounceMS) {
+						if (g_lastValidState[i] == value && !CHANNEL_HasValue(g_cfg.pins.channels[i])
+							&& !CFG_HasFlag(OBK_FLAG_BUTTON_DISABLE_ALL)) {
+							CHANNEL_Set(g_cfg.pins.channels[i], value, 0);
+						}
 						if (g_lastValidState[i] != value) {
 							// became up
 							g_lastValidState[i] = value;
@@ -2366,6 +2390,10 @@ void PIN_ticks(void* param)
 				}
 				else {
 					if (g_times2[i] > debounceMS) {
+						if (g_lastValidState[i] == value && !CHANNEL_HasValue(g_cfg.pins.channels[i])
+							&& !CFG_HasFlag(OBK_FLAG_BUTTON_DISABLE_ALL)) {
+							CHANNEL_Set(g_cfg.pins.channels[i], value, 0);
+						}
 						if (g_lastValidState[i] != value) {
 							// became down
 							g_lastValidState[i] = value;

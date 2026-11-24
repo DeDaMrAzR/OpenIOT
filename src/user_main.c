@@ -110,6 +110,33 @@ static HALWifiStatus_t g_newWiFiStatus = WIFI_UNDEFINED;
 static HALWifiStatus_t g_prevWiFiStatus = WIFI_UNDEFINED;
 static int g_noMQTTTime = 0;
 
+// The mailbox lock never spans HAL calls, logging, or SDK callbacks.
+static SemaphoreHandle_t s_stationPowerMutex;
+static int s_stationPowerRequest = -1;
+static int s_stationPowerRequestSeconds;
+static int s_stationPowerRequestPolicy;
+static int s_stationPowerBootPending;
+static volatile unsigned int s_sleepSeconds;
+static int s_sleepStarted;
+static int s_sleepPriorSuspended;
+static unsigned int s_sleepRequestedAt;
+// Existing BLE commands time out at 10s; allow two more cooperative main ticks.
+#define DEEP_SLEEP_CLEANUP_TIMEOUT_MS 12000U
+static int s_stationPowerMode = HAL_WIFI_STATION_ENABLE;
+static int s_stationPowerBusy;
+static int s_stationPowerError;
+static int s_stationPowerRestoreSeconds;
+static unsigned int s_stationPowerStoppedAt;
+static volatile int s_stationPowerSuspended;
+// Written only by the main tick; retry publication if a bounded mailbox lock fails.
+static int s_stationPowerCompletionPending;
+static int s_stationPowerCompletedMode;
+static int s_stationPowerCompletedResult;
+static int s_stationPowerCompletedSeconds;
+static unsigned int s_stationPowerCompletedAt;
+extern unsigned int g_timeMs;
+extern int g_bBootMarkedOK;
+
 uint8_t g_StartupDelayOver = 0;
 
 uint32_t idleCount = 0;
@@ -517,8 +544,239 @@ const char* CFG_GetWiFiPassX() {
 #endif
 }
 
+int Main_RequestWiFiStationPower(int mode, int restoreSeconds) {
+	if (!HAL_WiFi_StationPowerSupported() || !s_stationPowerMutex
+		|| mode < HAL_WIFI_STATION_ENABLE || mode > HAL_WIFI_STATION_OFF
+		|| restoreSeconds < 0 || restoreSeconds > HAL_WIFI_STATION_MAX_RESTORE_SECONDS
+		|| (mode != HAL_WIFI_STATION_ENABLE && (g_bOpenAccessPointMode || g_openAP))) {
+		return 0;
+	}
+	if (xSemaphoreTake(s_stationPowerMutex, 100) != pdTRUE) {
+		return 0;
+	}
+	if (s_stationPowerBusy || s_stationPowerRequest != -1 || s_sleepSeconds) {
+		xSemaphoreGive(s_stationPowerMutex);
+		return 0;
+	}
+	s_stationPowerRequestPolicy = mode == HAL_WIFI_STATION_ENABLE ? -1 : (restoreSeconds == 0);
+	s_stationPowerRequestSeconds = restoreSeconds;
+	s_stationPowerRequest = mode;
+	xSemaphoreGive(s_stationPowerMutex);
+	ADDLOG_DEBUG(LOG_FEATURE_MAIN, "WiFiStation: queued mode=%d restore=%ds", mode, restoreSeconds);
+	return 1;
+}
+
+int Main_WiFiStationIsOff(void) {
+	return s_stationPowerSuspended;
+}
+
+int Main_IsDeepSleepPending(void) {
+	return s_sleepSeconds != 0;
+}
+
+int Main_RequestTimedDeepSleep(unsigned int seconds) {
+	int accepted = 0;
+	if (!HAL_WiFi_StationPowerSupported() || !s_stationPowerMutex || bSafeMode
+		|| seconds == 0 || seconds > 0x1ffff) {
+		return 0;
+	}
+	if (xSemaphoreTake(s_stationPowerMutex, 100) != pdTRUE) {
+		return 0;
+	}
+	// An off decision must settle and be saved before BLE teardown can begin.
+	if (!s_sleepSeconds && !s_stationPowerBusy && s_stationPowerRequest == -1
+		&& !s_stationPowerCompletionPending && !s_stationPowerBootPending) {
+		s_sleepStarted = 0;
+		s_sleepRequestedAt = g_timeMs;
+		s_sleepSeconds = seconds;
+		accepted = 1;
+	}
+	xSemaphoreGive(s_stationPowerMutex);
+	ADDLOG_INFO(LOG_FEATURE_MAIN, "DeepSleep: request seconds=%u accepted=%d; pending WiFi policy or sleep must settle first", seconds, accepted);
+	return accepted;
+}
+
+void Main_PrintWiFiStationPower(void) {
+	HALWiFiStationPowerStatus status;
+	int mode, busy, pending, error, restore, remaining, readback;
+	unsigned int stoppedAt;
+	if (!s_stationPowerMutex || xSemaphoreTake(s_stationPowerMutex, 100) != pdTRUE) {
+		ADDLOG_INFO(LOG_FEATURE_MAIN, "WiFiStation: unsupported or controller unavailable");
+		return;
+	}
+	mode = s_stationPowerMode;
+	busy = s_stationPowerBusy;
+	pending = s_stationPowerRequest;
+	error = s_stationPowerError;
+	restore = s_stationPowerRestoreSeconds;
+	stoppedAt = s_stationPowerStoppedAt;
+	xSemaphoreGive(s_stationPowerMutex);
+	remaining = restore - (int)((unsigned int)(g_timeMs - stoppedAt) / 1000U);
+	if (remaining < 0 || mode == HAL_WIFI_STATION_ENABLE || restore == 0) {
+		remaining = 0;
+	}
+	readback = HAL_WiFi_GetStationPowerStatus(&status);
+	ADDLOG_INFO(LOG_FEATURE_MAIN, "WiFiStation: supported=%d savedOff=%d bootGatePending=%d sleepPending=%u requestedMode=%d pending=%d busy=%d error=%d restoreRemaining=%ds connected=%d stationVif=%d macClockGated=%d sdkStaRfSleep=%d bleRfOwned=%d readback=%d",
+		status.supported, CFG_HasFlag(OBK_FLAG_WIFI_STATION_OFF), s_stationPowerBootPending, s_sleepSeconds, mode, pending, busy, error, remaining, g_bHasWiFiConnected,
+		status.stationPresent, status.macClockGated, status.staRfSleep, status.bleRfOwned, readback);
+}
+
+static int Main_WiFiStationPowerPublish(void) {
+	int mode = s_stationPowerCompletedMode;
+	int result = s_stationPowerCompletedResult;
+	if (xSemaphoreTake(s_stationPowerMutex, 0) != pdTRUE) {
+		return 0;
+	}
+	s_stationPowerBusy = 0;
+	s_stationPowerError = result;
+	if (result == 0 || (result != -2 && !s_stationPowerSuspended)) {
+		s_stationPowerMode = mode;
+		s_stationPowerRestoreSeconds = mode == HAL_WIFI_STATION_ENABLE ? 0 : s_stationPowerCompletedSeconds;
+		s_stationPowerStoppedAt = s_stationPowerCompletedAt;
+	} else if (result != -2) {
+		s_stationPowerRestoreSeconds = 0;
+	}
+	s_stationPowerCompletionPending = 0;
+	xSemaphoreGive(s_stationPowerMutex);
+	return 1;
+}
+
+static void Main_WiFiStationPowerTick(void) {
+	int mode, seconds, policy, bootRequest, result, priorConnected, priorConnectDelay, priorPing, priorSuspended;
+	if (s_stationPowerCompletionPending && !Main_WiFiStationPowerPublish()) {
+		return;
+	}
+	if (!s_stationPowerMutex || xSemaphoreTake(s_stationPowerMutex, 0) != pdTRUE) {
+		return;
+	}
+	if (s_sleepSeconds) {
+		xSemaphoreGive(s_stationPowerMutex);
+		return;
+	}
+	mode = s_stationPowerRequest;
+	seconds = s_stationPowerRequestSeconds;
+	policy = s_stationPowerRequestPolicy;
+	bootRequest = mode == -1 && s_stationPowerBootPending;
+	if (bootRequest) {
+		mode = HAL_WIFI_STATION_OFF;
+		seconds = 0;
+		policy = 0;
+	}
+	if (mode == -1 && s_stationPowerSuspended && s_stationPowerRestoreSeconds > 0
+		&& (unsigned int)(g_timeMs - s_stationPowerStoppedAt) >= (unsigned int)s_stationPowerRestoreSeconds * 1000U) {
+		mode = HAL_WIFI_STATION_ENABLE;
+		seconds = 0;
+		policy = 0;
+	}
+	if (mode == -1) {
+		xSemaphoreGive(s_stationPowerMutex);
+		return;
+	}
+	s_stationPowerRequest = -1;
+	s_stationPowerBusy = 1;
+	xSemaphoreGive(s_stationPowerMutex);
+
+	priorConnected = g_bHasWiFiConnected;
+	priorConnectDelay = g_connectToWiFi;
+	priorPing = g_timeSinceLastPingReply;
+	priorSuspended = s_stationPowerSuspended;
+	// Suppress synchronous disconnect callbacks and new reconnect attempts first.
+	s_stationPowerSuspended = 1;
+	g_bHasWiFiConnected = 0;
+	g_connectToWiFi = 0;
+	g_timeSinceLastPingReply = -1;
+	result = HAL_WiFi_SetStationPower((HALWiFiStationPowerMode)mode);
+	if (result == 0) {
+		s_stationPowerBootPending = 0;
+		if (policy) {
+			CFG_SetFlag(OBK_FLAG_WIFI_STATION_OFF, policy > 0);
+			CFG_Save_IfThereArePendingChanges();
+		}
+	}
+	if (result == -2) {
+		s_stationPowerSuspended = priorSuspended;
+		g_bHasWiFiConnected = priorConnected;
+		g_connectToWiFi = priorConnectDelay;
+		g_timeSinceLastPingReply = priorPing;
+	} else if (result != 0) {
+		// A partial stop must wake the MAC before a normal stored-config reconnect.
+		if (HAL_WiFi_SetStationPower(HAL_WIFI_STATION_ENABLE) == 0 && !bootRequest && !priorSuspended) {
+			s_stationPowerSuspended = 0;
+			g_connectToWiFi = 1;
+			mode = HAL_WIFI_STATION_ENABLE;
+		} else {
+			s_stationPowerBootPending = 0;
+			ADDLOG_ERROR(LOG_FEATURE_MAIN, "WiFiStation: operation failed; intentional-off fault retained, inspect status");
+		}
+	} else if (mode == HAL_WIFI_STATION_ENABLE) {
+		s_stationPowerSuspended = 0;
+		g_connectToWiFi = 1;
+	}
+	if (result != -2) {
+		g_newWiFiStatus = WIFI_STA_DISCONNECTED;
+	}
+	// No request can replace a busy operation. Preserve completion until published.
+	s_stationPowerCompletedMode = mode;
+	s_stationPowerCompletedResult = result;
+	s_stationPowerCompletedSeconds = seconds;
+	s_stationPowerCompletedAt = g_timeMs;
+	s_stationPowerCompletionPending = 1;
+	Main_WiFiStationPowerPublish();
+	ADDLOG_DEBUG(LOG_FEATURE_MAIN, "WiFiStation: mode=%d result=%d suspended=%d; restore countdown starts after successful stop", mode, result, s_stationPowerSuspended);
+}
+
+static void Main_TimedDeepSleepTick(void) {
+	int ready;
+	if (!s_sleepSeconds) {
+		return;
+	}
+	if (!s_sleepStarted) {
+		s_sleepPriorSuspended = s_stationPowerSuspended;
+		s_stationPowerSuspended = 1;
+		g_bHasWiFiConnected = 0;
+		g_connectToWiFi = 0;
+		g_timeSinceLastPingReply = -1;
+		s_sleepStarted = 1;
+		ready = HAL_WiFi_PrepareDeepSleep(1);
+		ADDLOG_DEBUG(LOG_FEATURE_MAIN, "DeepSleep: BLE cleanup requested, savedOff=%d", CFG_HasFlag(OBK_FLAG_WIFI_STATION_OFF));
+	} else {
+		ready = HAL_WiFi_PrepareDeepSleep(0);
+	}
+	if (ready == 0 && (unsigned int)(g_timeMs - s_sleepRequestedAt) < DEEP_SLEEP_CLEANUP_TIMEOUT_MS) {
+		return;
+	}
+	if (ready == 1) {
+		CFG_Save_IfThereArePendingChanges();
+		// Intentional RTC cycling must not count as repeated failed early boots.
+		if (!g_bBootMarkedOK && !bSafeMode) {
+			HAL_FlashVars_SaveBootComplete();
+			g_bBootMarkedOK = true;
+		}
+		if (HAL_WiFi_EnterDeepSleep(s_sleepSeconds) == 0) {
+			return;
+		}
+	}
+	ADDLOG_ERROR(LOG_FEATURE_MAIN, "DeepSleep: aborted cleanup=%d or SDK entry returned; no wake claimed", ready);
+	// Keep saved/off policy intact; resume the configured advertiser on the next tick.
+	if (!s_sleepPriorSuspended && HAL_WiFi_SetStationPower(HAL_WIFI_STATION_ENABLE) == 0) {
+		s_stationPowerSuspended = 0;
+		g_connectToWiFi = 1;
+	}
+	HAL_WiFi_PrepareDeepSleep(-1);
+	s_sleepStarted = 0;
+	s_sleepSeconds = 0;
+}
+
 void Main_OnWiFiStatusChange(int code)
 {
+	if (s_stationPowerSuspended) {
+		g_bHasWiFiConnected = 0;
+		g_connectToWiFi = 0;
+		g_timeSinceLastPingReply = -1;
+		g_newWiFiStatus = WIFI_STA_DISCONNECTED;
+		ADDLOG_DEBUG(LOG_FEATURE_MAIN, "WiFiStation: suppressed callback=%d while intentionally stopped", code);
+		return;
+	}
 	// careful what you do in here.
 	// e.g. creata socket?  probably not....
 	switch (code)
@@ -625,6 +883,9 @@ void CFG_Save_SetupTimer()
 
 void Main_OnPingCheckerReply(int ms)
 {
+	if (s_stationPowerSuspended) {
+		return;
+	}
 	g_timeSinceLastPingReply = 0;
 }
 
@@ -702,6 +963,10 @@ void Main_ScheduleHomeAssistantDiscovery(int seconds) {
 
 
 void Main_ConnectToWiFiNow() {
+	if (s_stationPowerSuspended) {
+		ADDLOG_DEBUG(LOG_FEATURE_MAIN, "WiFiStation: reconnect suppressed while intentionally stopped");
+		return;
+	}
 	const char* wifi_ssid, * wifi_pass;
 
 	g_bOpenAccessPointMode = 0;
@@ -754,6 +1019,7 @@ float g_wifi_temperature = 0;
 static byte g_secondsSpentInLowMemoryWarning = 0;
 void Main_OnEverySecond()
 {
+	Main_WiFiStationPowerTick();
 #if PLATFORM_W600 || PLATFORM_W800
 #define TimeOut_t xTimeOutType 
 #endif
@@ -849,6 +1115,7 @@ void Main_OnEverySecond()
 	// Service BLE cleanup even after stopDriver removes the common driver.
 	HAL_BTProxy_OnEverySecond();
 #endif
+	Main_TimedDeepSleepTick();
 #if defined(PLATFORM_BEKEN) || defined(WINDOWS) || defined(PLATFORM_BL602) || defined(PLATFORM_ESPIDF) \
  || defined (PLATFORM_RTL87X0C) || PLATFORM_ESP8266 || defined(PLATFORM_ARMINO) && !PLATFORM_BL_NEW
 	UART_RunEverySecond();
@@ -895,7 +1162,7 @@ void Main_OnEverySecond()
 	// some users say that despite our simple reconnect mechanism
 	// there are some rare cases when devices stuck outside network
 	// That is why we can also reconnect them by basing on ping
-	if (g_timeSinceLastPingReply != -1 && g_secondsElapsed > 60)
+	if (!s_stationPowerSuspended && g_timeSinceLastPingReply != -1 && g_secondsElapsed > 60)
 	{
 		// cast event so users can script anything easily, run custom commands
 		// Usage: addChangeHandler noPingTime > 600 reboot
@@ -1030,7 +1297,7 @@ void Main_OnEverySecond()
 		}
 	}
 #endif
-	if (g_openAP)
+	if (g_openAP && !s_stationPowerSuspended)
 	{
 		if (g_bHasWiFiConnected)
 		{
@@ -1560,6 +1827,20 @@ void Main_Init_Before_Delay()
 		ADDLOGF_INFO("###### safe mode activated - boot failures %d", g_bootFailures);
 	}
 	CFG_InitAndLoad();
+	if (HAL_WiFi_StationPowerSupported() && s_stationPowerMutex
+		&& CFG_HasFlag(OBK_FLAG_WIFI_STATION_OFF)) {
+		if (bSafeMode) {
+			ADDLOG_INFO(LOG_FEATURE_MAIN, "WiFiStation: safe mode bypasses saved off policy without erasing it");
+		} else {
+			s_stationPowerSuspended = 1;
+			s_stationPowerMode = HAL_WIFI_STATION_OFF;
+			s_stationPowerBootPending = 1;
+			g_connectToWiFi = 0;
+			g_openAP = 0;
+			g_timeSinceLastPingReply = -1;
+			ADDLOG_INFO(LOG_FEATURE_MAIN, "WiFiStation: saved off loaded before scripts/network; awaiting stable BLE for MAC gate");
+		}
+	}
 
 #if ENABLE_DRIVER_XIAOMI_COMPACT4
 	// Keep motor hardware inert before normal driver startup and throughout safe mode.
@@ -1636,7 +1917,11 @@ void Main_Init_After_Delay()
 	HAL_Configure_WDT();
 #endif
 
-	if ((*wifi_ssid == 0))
+	if (s_stationPowerSuspended) {
+		g_openAP = 0;
+		g_connectToWiFi = 0;
+	}
+	else if ((*wifi_ssid == 0))
 	{
 		// start AP mode in 5 seconds
 		g_openAP = 5;
@@ -1727,6 +2012,12 @@ int HAL_PIN_Find(const char *name) {
 
 void Main_Init()
 {
+	if (HAL_WiFi_StationPowerSupported()) {
+		s_stationPowerMutex = xSemaphoreCreateMutex();
+		if (!s_stationPowerMutex) {
+			ADDLOG_ERROR(LOG_FEATURE_MAIN, "WiFiStation: controller mutex allocation failed");
+		}
+	}
 	g_unsafeInitDone = false;
 	bk_printf("%s, version %s\r\n", DEVICENAME_PREFIX_FULL, USER_SW_VER);
 

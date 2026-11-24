@@ -14,6 +14,7 @@
 #include "../hal/hal_flashVars.h"
 #include "../httpserver/http_tcp_server.h"
 #include "../hal/hal_generic.h"
+#include "../hal/hal_wifi.h"
 
 int cmd_uartInitIndex = 0;
 
@@ -391,6 +392,21 @@ static commandResult_t CMD_DeepSleep(const void* context, const char* cmd, const
 		return CMD_RES_NOT_ENOUGH_ARGUMENTS;
 	}
 
+	if (HAL_WiFi_StationPowerSupported()) {
+		const char *text = Tokenizer_GetArg(0);
+		unsigned int seconds = 0;
+		if (Tokenizer_GetArgsCount() != 1 || !text || !*text) {
+			return CMD_RES_BAD_ARGUMENT;
+		}
+		while (*text) {
+			if (*text < '0' || *text > '9'
+				|| seconds > (0x1ffffU - (unsigned int)(*text - '0')) / 10U) {
+				return CMD_RES_BAD_ARGUMENT;
+			}
+			seconds = seconds * 10U + (unsigned int)(*text++ - '0');
+		}
+		return Main_RequestTimedDeepSleep(seconds) ? CMD_RES_OK : CMD_RES_ERROR;
+	}
 	timeMS = Tokenizer_GetArgInteger(0);
 
 	HAL_DisconnectFromWifi();
@@ -1051,6 +1067,44 @@ static commandResult_t CMD_PowerSave_WFI(const void* context, const char* cmd, c
 	return CMD_RES_OK;
 }
 
+static commandResult_t CMD_WiFiStation(const void *context, const char *cmd, const char *args, int cmdFlags) {
+	int mode, arguments;
+	unsigned int seconds = 0;
+	const char *text;
+	Tokenizer_TokenizeString(args, 0);
+	arguments = Tokenizer_GetArgsCount();
+	if (arguments == 0 || (arguments == 1 && !stricmp(Tokenizer_GetArg(0), "status"))) {
+		Main_PrintWiFiStationPower();
+		return CMD_RES_OK;
+	}
+	text = Tokenizer_GetArg(0);
+	if (!stricmp(text, "on")) {
+		mode = HAL_WIFI_STATION_ENABLE;
+	} else if (!stricmp(text, "off")) {
+		mode = HAL_WIFI_STATION_OFF;
+	} else {
+		return CMD_RES_BAD_ARGUMENT;
+	}
+	if ((mode == HAL_WIFI_STATION_ENABLE && arguments != 1)
+		|| (mode != HAL_WIFI_STATION_ENABLE && arguments > 2)) {
+		return CMD_RES_BAD_ARGUMENT;
+	}
+	if (arguments == 2) {
+		text = Tokenizer_GetArg(1);
+		if (!*text) {
+			return CMD_RES_BAD_ARGUMENT;
+		}
+		while (*text) {
+			if (*text < '0' || *text > '9'
+				|| seconds > ((unsigned int)HAL_WIFI_STATION_MAX_RESTORE_SECONDS - (unsigned int)(*text - '0')) / 10U) {
+				return CMD_RES_BAD_ARGUMENT;
+			}
+			seconds = seconds * 10U + (unsigned int)(*text++ - '0');
+		}
+	}
+	return Main_RequestWiFiStationPower(mode, (int)seconds) ? CMD_RES_OK : CMD_RES_ERROR;
+}
+
 static commandResult_t CMD_Disconnect(const void *context, const char *cmd, const char *args, int cmdFlags)
 {
 	HAL_DisconnectFromWifi();
@@ -1125,9 +1179,9 @@ void CMD_Init_Early() {
 	//cmddetail:"examples":""}
 	CMD_RegisterCommand("clearAll", CMD_ClearAll, NULL);
 	//cmddetail:{"name":"DeepSleep","args":"[Seconds]",
-	//cmddetail:"descr":"Starts deep sleep for given amount of seconds. Please remember that there is also a separate command, called PinDeepSleep, which is not using a timer, but a GPIO to wake up device.",
+	//cmddetail:"descr":"Starts deep sleep for given amount of seconds. Please remember that there is also a separate command, called PinDeepSleep, which is not using a timer, but a GPIO to wake up device. On newer BK7231N with BTHome, Seconds must be 1..131071. The request queues bounded asynchronous BLE cleanup and saves pending configuration before SDK RTC entry; pending station-power decisions must settle first. An unexpected SDK return is reported as failure.",
 	//cmddetail:"fn":"CMD_DeepSleep","file":"cmnds/cmd_main.c","requires":"",
-	//cmddetail:"examples":""}
+	//cmddetail:"examples":"DeepSleep 10"}
 	CMD_RegisterCommand("DeepSleep", CMD_DeepSleep, NULL);
 	//cmddetail:{"name":"PowerSave","args":"[Optional 1 or 0, by default 1 is assumed]",
 	//cmddetail:"descr":"Enables dynamic power saving mode on all platforms with the exception of TR6260. On LN882H PowerSave 1 = light sleep and Powersave >1 (eg PowerSave 2) = deeper sleep. On LN882H PowerSave 1 should be used if BL0937 metering is present. On all supported platforms PowerSave 0 can be used to disable power saving.",
@@ -1230,6 +1284,12 @@ void CMD_Init_Early() {
 	// cmddetail:"fn":"CMD_Disconnect","file":"cmnds/cmd_main.c","requires":"",
 	// cmddetail:"examples":""}
 	CMD_RegisterCommand("Disconnect", CMD_Disconnect, NULL);
+
+	//cmddetail:{"name":"WiFiStation","args":"[status|on|off] [RestoreSeconds]",
+	//cmddetail:"descr":"On newer BK7231N with BTHome, off combines station shutdown and the reviewed SDK MAC clock gate while BLE retains shared RF. This is not PHY/RF/power-rail shutdown. off with no time or 0 saves boot policy (flag 52); on wakes MAC, clears saved policy and reconnects. Positive off seconds is RAM-only automatic restore after successful shutdown and does not change saved policy. Reboot follows saved policy, not a temporary override. Requests are asynchronous; inspect status/errors/actual clock. Refuses AP, monitor, scanning and unsafe BLE transitions; stable active BTHome is required to gate MAC. Saved-off boot suppresses networking before scripts/connection/AP fallback and waits for active BLE before clock gating. Existing startup scripts must start BTHome and configure typed channels; this command does not start sensors. BLE cleanup/restart can wake MAC for SDK safety while networking stays off. Status reports mode 0 on/1 off, savedOff and actual MAC/SDK bits. Recovery uses an existing local/script WiFiStation on or normal rapid-power-cycle safe-mode recovery. Safe mode bypasses but does not erase saved off. This command does not enable serial command input. DeepSleep rejects pending station decisions, waits for asynchronous BLE cleanup and saves config before RTC entry; an unexpected SDK return is reported as failure. Validate wake and recovery on the actual board.",
+	//cmddetail:"fn":"CMD_WiFiStation","file":"cmnds/cmd_main.c","requires":"",
+	//cmddetail:"examples":"WiFiStation status <br />WiFiStation off 60 <br />WiFiStation off <br />WiFiStation on"}
+	CMD_RegisterCommand("WiFiStation", CMD_WiFiStation, NULL);
 
 #if MQTT_USE_TLS
 	//cmddetail:{"name":"WebServer","args":"[0 - Stop / 1 - Start]",

@@ -12,6 +12,48 @@
 #include "../../new_pins.h"
 #include "../src/new_cfg.h"
 
+#if defined(PLATFORM_BEKEN_NEW) && defined(PLATFORM_BK7231N)
+#include "../hal_bt_proxy.h"
+#include "drv_model_pub.h"
+#include "power_save_pub.h"
+#include "manual_ps_pub.h"
+#include "sys_ctrl_pub.h"
+#include "sys_ctrl.h"
+#include "rw_msg_pub.h"
+#include "rw_pub.h"
+#include "scanu_task.h"
+extern UINT32 sta_rf_sleeped;
+
+static volatile int s_stationMacOwned;
+
+static int BK_WiFiMACGated(void) {
+	return s_stationMacOwned && sta_rf_sleeped != 0;
+}
+
+// The SDK's has_role(STA) uses SSID length, which stop clears before VIF removal.
+// Inspect the real RAM list under the platform critical section instead.
+static int BK_WiFiHasVIF(int type) {
+	int present = 0;
+	VIF_INF_PTR vif;
+	GLOBAL_INT_DECLARATION();
+	GLOBAL_INT_DISABLE();
+	vif = (VIF_INF_PTR)rwm_mgmt_is_vif_first_used();
+	while (vif) {
+		if (type < 0 || vif->type == type) {
+			present = 1;
+			break;
+		}
+		vif = (VIF_INF_PTR)rwm_mgmt_next(vif);
+	}
+	GLOBAL_INT_RESTORE();
+	return present;
+}
+#else
+static int BK_WiFiMACGated(void) {
+	return 0;
+}
+#endif
+
 #ifdef PLATFORM_BEKEN_NEW
 
 #define SOFT_AP						BK_SOFT_AP
@@ -43,6 +85,9 @@ IPStatusTypedef ipStatus;
 // This must return correct IP for both SOFT_AP and STATION modes,
 // because, for example, javascript control panel requires it
 const char* HAL_GetMyIPString() {
+	if (BK_WiFiMACGated()) {
+		return "0.0.0.0";
+	}
 
 	memset(&ipStatus, 0x0, sizeof(IPStatusTypedef));
 	if (g_bOpenAccessPointMode) {
@@ -140,6 +185,10 @@ char *get_security_type(int type) {
 
 void HAL_PrintNetworkInfo()
 {
+	if (BK_WiFiMACGated()) {
+		ADDLOG_DEBUG(LOG_FEATURE_GENERAL, "WiFiStation: MAC sleep active; network SDK queries skipped");
+		return;
+	}
 	IPStatusTypedef ipStatus;
 
 	memset(&ipStatus, 0x0, sizeof(IPStatusTypedef));
@@ -251,6 +300,9 @@ void HAL_PrintNetworkInfo()
 
 int HAL_GetWifiStrength()
 {
+	if (BK_WiFiMACGated()) {
+		return 0;
+	}
 	LinkStatusTypeDef linkStatus;
 	memset(&linkStatus, 0x0, sizeof(LinkStatusTypeDef));
 	bk_wlan_get_link_status(&linkStatus);
@@ -272,6 +324,10 @@ char* HAL_GetWiFiSSID(char* ssid){
 };
 */
 char* HAL_GetWiFiBSSID(char* bssid){
+	if (BK_WiFiMACGated()) {
+		bssid[0] = 0;
+		return bssid;
+	}
 	if (sta_ip_is_start()){
 		LinkStatusTypeDef linkStatus;
 		bk_wlan_get_link_status(&linkStatus);
@@ -282,6 +338,10 @@ char* HAL_GetWiFiBSSID(char* bssid){
 	return bssid; 
 };
 uint8_t HAL_GetWiFiChannel(uint8_t *chan){
+	if (BK_WiFiMACGated()) {
+		*chan = 0;
+		return 0;
+	}
 	if (sta_ip_is_start()){
 		LinkStatusTypeDef linkStatus;
 		bk_wlan_get_link_status(&linkStatus);
@@ -371,6 +431,10 @@ void HAL_WiFi_SetupStatusCallback(void (*cb)(int code))
 
 void HAL_ConnectToWiFi(const char* oob_ssid, const char* connect_key, obkStaticIP_t *ip)
 {
+	if (Main_WiFiStationIsOff() || BK_WiFiMACGated()) {
+		ADDLOG_ERROR(LOG_FEATURE_GENERAL, "WiFiStation: use WiFiStation on before connecting while networking is off");
+		return;
+	}
 	g_bOpenAccessPointMode = 0;
 
 	network_InitTypeDef_st network_cfg;
@@ -402,6 +466,10 @@ void HAL_ConnectToWiFi(const char* oob_ssid, const char* connect_key, obkStaticI
 
 void HAL_FastConnectToWiFi(const char* oob_ssid, const char* connect_key, obkStaticIP_t* ip)
 {
+	if (Main_WiFiStationIsOff() || BK_WiFiMACGated()) {
+		ADDLOG_ERROR(LOG_FEATURE_GENERAL, "WiFiStation: use WiFiStation on before connecting while networking is off");
+		return;
+	}
 	int len = ef_get_env_blob("fcdata", &fcdata, sizeof(obkFastConnectData_t), NULL);
 	if(len == sizeof(obkFastConnectData_t) && fcdata.channel != 0)
 	{
@@ -445,13 +513,145 @@ void HAL_DisableEnhancedFastConnect()
 	ef_del_env("fcdata");
 }
 
+#if defined(PLATFORM_BEKEN_NEW) && defined(PLATFORM_BK7231N)
+int HAL_WiFi_StationPowerSupported(void) {
+#if ENABLE_DRIVER_BTHOME && CFG_USE_STA_PS && CFG_USE_PTA
+	return 1;
+#else
+	return 0;
+#endif
+}
+
+int HAL_WiFi_GetStationPowerStatus(HALWiFiStationPowerStatus *status) {
+	UINT32 control = 0;
+	status->supported = HAL_WiFi_StationPowerSupported();
+	if (!status->supported) {
+		status->stationPresent = -1;
+		status->macClockGated = -1;
+		status->staRfSleep = -1;
+		status->bleRfOwned = -1;
+		return -2;
+	}
+	status->stationPresent = BK_WiFiHasVIF(VIF_STA);
+	status->staRfSleep = sta_rf_sleeped != 0;
+#if ENABLE_DRIVER_BTHOME
+	status->bleRfOwned = HAL_BT_AdvRFHoldOwned();
+#else
+	status->bleRfOwned = 0;
+#endif
+	if (sddev_control(SCTRL_DEV_NAME, CMD_GET_SCTRL_CONTROL, &control) != kNoErr) {
+		status->macClockGated = -1;
+		return -1;
+	}
+	status->macClockGated = (control & MAC_CLK480M_PWD_BIT) != 0;
+	return status->macClockGated == status->staRfSleep ? 0 : -1;
+}
+
+int HAL_WiFi_SetStationPower(HALWiFiStationPowerMode mode) {
+#if ENABLE_DRIVER_BTHOME && CFG_USE_STA_PS && CFG_USE_PTA
+	HALWiFiStationPowerStatus status;
+	int result;
+	if (mode == HAL_WIFI_STATION_ENABLE) {
+		// This paired SDK wake enables the MAC before any station/API access.
+		sctrl_sta_rf_wakeup();
+		result = HAL_WiFi_GetStationPowerStatus(&status);
+		ADDLOG_DEBUG(LOG_FEATURE_GENERAL, "WiFiStation: wake result=%d MACgated=%d sdkSleep=%d", result, status.macClockGated, status.staRfSleep);
+		if (result == 0 && !status.macClockGated) {
+			s_stationMacOwned = 0;
+			return 0;
+		}
+		return -1;
+	}
+	if (mode != HAL_WIFI_STATION_OFF) {
+		return -2;
+	}
+	// Reapplying off is idempotent when owned hardware state is still gated.
+	if (BK_WiFiMACGated()) {
+		return HAL_WiFi_GetStationPowerStatus(&status) == 0 && !BK_WiFiHasVIF(-1) ? 0 : -1;
+	}
+	if (g_bOpenAccessPointMode || BK_WiFiHasVIF(VIF_AP)
+		|| bk_wlan_is_monitor_mode() || mhdr_get_station_stage() == RW_STG_STA_SCAN
+		|| ke_state_get(TASK_SCANU) != SCANU_IDLE
+		|| !HAL_BT_AdvWiFiStopReady(1)) {
+		ADDLOG_ERROR(LOG_FEATURE_GENERAL, "WiFiStation: rejected AP/monitor/scan or unsafe BLE state; stable active BTHome is required");
+		return -2;
+	}
+	ADDLOG_DEBUG(LOG_FEATURE_GENERAL, "WiFiStation: stopping station mode=%d BLEholdOwned=%d", mode, HAL_BT_AdvRFHoldOwned());
+	result = BK_WiFiHasVIF(VIF_STA) ? bk_wlan_stop(STATION) : kNoErr;
+	if (result != kNoErr || BK_WiFiHasVIF(-1) || ke_state_get(TASK_SCANU) != SCANU_IDLE) {
+		ADDLOG_ERROR(LOG_FEATURE_GENERAL, "WiFiStation: stop failed result=%d or VIF still present", result);
+		return -1;
+	}
+	memset(&ipStatus, 0, sizeof(ipStatus));
+	strcpy(g_IP, "0.0.0.0");
+	// Station disable completed in the WPA task; no STA/AP VIF remains.
+	// The SDK gates MAC clocks, while the active advertiser retains shared RF.
+	s_stationMacOwned = 1;
+	sctrl_sta_rf_sleep();
+	result = HAL_WiFi_GetStationPowerStatus(&status);
+	if (result != 0 || !status.macClockGated) {
+		ADDLOG_ERROR(LOG_FEATURE_GENERAL, "WiFiStation: clock readback failed mode=%d result=%d MACgated=%d sdkSleep=%d", mode, result, status.macClockGated, status.staRfSleep);
+		return -1;
+	}
+	ADDLOG_DEBUG(LOG_FEATURE_GENERAL, "WiFiStation: stop complete mode=%d MACgated=%d sdkSleep=%d BLEholdOwned=%d", mode, status.macClockGated, status.staRfSleep, status.bleRfOwned);
+	return 0;
+#else
+	(void)mode;
+	return -2;
+#endif
+}
+int HAL_WiFi_PrepareDeepSleep(int start) {
+#if ENABLE_DRIVER_BTHOME && CFG_USE_STA_PS && CFG_USE_PTA && CFG_USE_DEEP_PS
+	return HAL_BT_DeepSleepReady(start);
+#else
+	(void)start;
+	return -1;
+#endif
+}
+
+int HAL_WiFi_EnterDeepSleep(unsigned int seconds) {
+#if ENABLE_DRIVER_BTHOME && CFG_USE_STA_PS && CFG_USE_PTA && CFG_USE_DEEP_PS
+	PS_DEEP_CTRL_PARAM params;
+	if (seconds == 0 || seconds > 0x1ffff || HAL_BT_DeepSleepReady(0) != 1
+		|| HAL_WiFi_SetStationPower(HAL_WIFI_STATION_ENABLE) != 0) {
+		return -1;
+	}
+	// SDK shutdown must run with MAC awake; no reconnect is requested here.
+	if (bk_wlan_stop(STATION) != kNoErr || BK_WiFiHasVIF(-1)) {
+		return -1;
+	}
+	memset(&params, 0, sizeof(params));
+	params.sleep_mode = MANUAL_MODE_IDLE;
+	params.wake_up_way = PS_DEEP_WAKEUP_RTC;
+	params.sleep_time = seconds;
+	ADDLOG_INFO(LOG_FEATURE_GENERAL, "DeepSleep: entering SDK RTC sleep seconds=%u; RTC wake needs hardware validation", seconds);
+	bk_enter_deep_sleep_mode(&params);
+	// A deep-sleep wake boots again; returning here is not a successful wake.
+	return -1;
+#else
+	(void)seconds;
+	return -1;
+#endif
+}
+#endif
+
 void HAL_DisconnectFromWifi()
 {
+#if defined(PLATFORM_BEKEN_NEW) && defined(PLATFORM_BK7231N)
+	if (BK_WiFiMACGated() && HAL_WiFi_SetStationPower(HAL_WIFI_STATION_ENABLE) != 0) {
+		ADDLOG_ERROR(LOG_FEATURE_GENERAL, "WiFiStation: cannot disconnect with MAC clock still gated");
+		return;
+	}
+#endif
     bk_wlan_stop(STATION);
 }
 
 int HAL_SetupWiFiOpenAccessPoint(const char* ssid)
 {
+	if (Main_WiFiStationIsOff() || BK_WiFiMACGated()) {
+		ADDLOG_ERROR(LOG_FEATURE_GENERAL, "WiFiStation: use WiFiStation on before starting an AP while networking is off");
+		return -1;
+	}
 #define APP_DRONE_DEF_NET_IP        "192.168.4.1"
 #define APP_DRONE_DEF_NET_MASK      "255.255.255.0"
 #define APP_DRONE_DEF_NET_GW        "192.168.4.1"

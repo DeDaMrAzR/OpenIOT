@@ -1427,7 +1427,9 @@ typedef struct pinsState_s {
 #define OBK_FLAG_MQTT_NEVERAPPENDGET				50
 #define OBK_FLAG_WIFI_ENHANCED_FAST_CONNECT			51
 
-#define OBK_TOTAL_FLAGS 52
+#define OBK_FLAG_WIFI_STATION_OFF					52
+
+#define OBK_TOTAL_FLAGS 53
 
 #define LOGGER_FLAG_MQTT_DEDUPER					1
 #define LOGGER_FLAG_POWER_SAVE						2
@@ -1804,6 +1806,9 @@ bool CHANNEL_Check(int ch);
 void PIN_SetGenericDoubleClickCallback(void (*cb)(int pinIndex));
 void CHANNEL_ClearAllChannels();
 // CHANNEL_SET_FLAG_*
+// Channel API write since startup/type change, not a physical freshness guarantee.
+int CHANNEL_HasValue(int ch);
+void CHANNEL_InvalidateValue(int ch);
 void CHANNEL_Set_Ex(int ch, int iVal, int iFlags, int ausemovingaverage);
 void CHANNEL_Set(int ch, int iVal, int iFlags);
 void CHANNEL_SetSmart(int ch, float fVal, int iFlags);

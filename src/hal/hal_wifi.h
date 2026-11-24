@@ -1,6 +1,59 @@
 #ifndef __HAL_WIFI_H__
 #define __HAL_WIFI_H__
 
+#include <limits.h>
+
+typedef enum {
+	HAL_WIFI_STATION_ENABLE,
+	HAL_WIFI_STATION_OFF
+} HALWiFiStationPowerMode;
+
+#define HAL_WIFI_STATION_MAX_RESTORE_SECONDS (INT_MAX / 1000)
+
+typedef struct {
+	int supported;
+	int stationPresent;
+	int macClockGated;
+	int staRfSleep;
+	int bleRfOwned;
+} HALWiFiStationPowerStatus;
+
+// Only the newer BK7231N SDK has a reviewed station/MAC sleep and wake pair.
+// Feature selection remains in its implementation: this header can precede obk_config.h.
+#if defined(PLATFORM_BEKEN_NEW) && defined(PLATFORM_BK7231N)
+int HAL_WiFi_StationPowerSupported(void);
+// 0 success, -2 rejected before changing hardware, -1 operation/readback failed.
+int HAL_WiFi_SetStationPower(HALWiFiStationPowerMode mode);
+int HAL_WiFi_GetStationPowerStatus(HALWiFiStationPowerStatus *status);
+// Nonblocking cleanup: start=1 fences/stops BLE, -1 cancels the fence; polls return 1 idle, 0 pending, -1 failed.
+int HAL_WiFi_PrepareDeepSleep(int start);
+int HAL_WiFi_EnterDeepSleep(unsigned int seconds);
+#else
+static inline int HAL_WiFi_StationPowerSupported(void) {
+	return 0;
+}
+static inline int HAL_WiFi_SetStationPower(HALWiFiStationPowerMode mode) {
+	(void)mode;
+	return -2;
+}
+static inline int HAL_WiFi_GetStationPowerStatus(HALWiFiStationPowerStatus *status) {
+	status->supported = 0;
+	status->stationPresent = -1;
+	status->macClockGated = -1;
+	status->staRfSleep = -1;
+	status->bleRfOwned = -1;
+	return -2;
+}
+static inline int HAL_WiFi_PrepareDeepSleep(int start) {
+	(void)start;
+	return -1;
+}
+static inline int HAL_WiFi_EnterDeepSleep(unsigned int seconds) {
+	(void)seconds;
+	return -1;
+}
+#endif
+
 #ifndef MAC2STR
 #define MAC2STR(a) (a)[0], (a)[1], (a)[2], (a)[3], (a)[4], (a)[5]
 #endif

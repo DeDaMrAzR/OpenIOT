@@ -70,6 +70,7 @@ typedef struct {
 	bool awaitingStart;
 	bool awaitingStop;
 	bool backendFault;
+	bool sleepPaused;
 	int periodSeconds;
 	int advIntervalMs;
 	int secondsRemaining;
@@ -323,6 +324,9 @@ static int BTHome_EncodeGroup(unsigned int object, uint8_t *data, int *invalidCh
 			continue;
 		}
 		*invalidChannel = channel;
+		if (!CHANNEL_HasValue(channel)) {
+			return -2;
+		}
 		if (CHANNEL_GetType(channel) != type) {
 			return -1;
 		}
@@ -417,7 +421,7 @@ static commandResult_t BTHome_Status(const void *context, const char *cmd, const
 	ADDLOG_INFO(LOG_FEATURE_DRV, "BTHome: running=%d configured=%d period=%ds interval=%dms next=%ds adv=%d error=%d submitted=%u errors=%u", snapshot.running, snapshot.configured, snapshot.periodSeconds, snapshot.advIntervalMs, snapshot.secondsRemaining, state, error, snapshot.packets, snapshot.errors);
 	ADDLOG_INFO(LOG_FEATURE_DRV, "BTHome: awaitingStart=%d awaitingStop=%d backendFault=%d; accepted requests are not completed starts or received packets", snapshot.awaitingStart, snapshot.awaitingStop, snapshot.backendFault);
 	ADDLOG_INFO(LOG_FEATURE_DRV, "BTHome: configuredName='%s' advertisedName='%s' complete=%d nameValid=%d", snapshot.configuredName, snapshot.advertisedName, snapshot.nameValid && !snapshot.shortenedName, snapshot.nameValid);
-	ADDLOG_INFO(LOG_FEATURE_DRV, "BTHome: pages=%d nextPage=%d nominalGroupRefresh=%ds unsupportedChannels=%d oversizedGroups=%d invalidGroupMask=0x%X; cached values, freshness not tracked", snapshot.frameCount, snapshot.frameCount ? snapshot.nextFrame + 1 : 0, snapshot.frameCount * snapshot.periodSeconds, snapshot.unsupported, snapshot.oversized, (unsigned int)snapshot.invalidGroups);
+	ADDLOG_INFO(LOG_FEATURE_DRV, "BTHome: pages=%d nextPage=%d nominalGroupRefresh=%ds unsupportedChannels=%d oversizedGroups=%d invalidGroupMask=0x%X; cached values; channel API write required since boot/type change, not physical freshness", snapshot.frameCount, snapshot.frameCount ? snapshot.nextFrame + 1 : 0, snapshot.frameCount * snapshot.periodSeconds, snapshot.unsupported, snapshot.oversized, (unsigned int)snapshot.invalidGroups);
 	for (object = 0; object < BTHOME_OBJECT_COUNT; object++) {
 		if (snapshot.counts[object]) {
 			ADDLOG_INFO(LOG_FEATURE_DRV, "BTHome: object=0x%02X %s fields=%d page=%d latestCheckedInvalid=%d invalidChannel=%d", s_objects[object].id, s_objects[object].name, snapshot.counts[object], snapshot.frames[object] + 1, (snapshot.invalidGroups & (1U << object)) != 0, snapshot.invalidChannel[object]);
@@ -434,7 +438,7 @@ static commandResult_t BTHome_Status(const void *context, const char *cmd, const
 		} else if (CHANNEL_GetType(channel) != type) {
 			ADDLOG_INFO(LOG_FEATURE_DRV, "BTHome: channel=%d type changed since layout; rediscovery pending", channel);
 		} else {
-			ADDLOG_INFO(LOG_FEATURE_DRV, "BTHome: channel=%d type=%d object=0x%02X %s cached=%.3f", channel, type, s_objects[index].id, s_objects[index].name, CHANNEL_GetFinalValue(channel));
+			ADDLOG_INFO(LOG_FEATURE_DRV, "BTHome: channel=%d type=%d object=0x%02X %s written=%d cached=%.3f", channel, type, s_objects[index].id, s_objects[index].name, CHANNEL_HasValue(channel), CHANNEL_GetFinalValue(channel));
 		}
 	}
 	return CMD_RES_OK;
@@ -448,7 +452,7 @@ void BTHome_Init(void) {
 	s_bthome.advIntervalMs = BTHOME_DEFAULT_ADV_INTERVAL_MS;
 	// Start unconfigured; setup discovers typed channels before any publication.
 	//cmddetail:{"name":"BTHome_Setup","args":"[OptionalPeriodSeconds=5] [OptionalAdvIntervalMs=200]",
-	//cmddetail:"descr":"Configure timing and automatically discover supported typed channels: battery percent, temperature, humidity, pressure, illuminance, opening, motion, current, voltage, energy and power, including their handled scaled channel types. The old temperature/humidity channel arguments are no longer accepted. PeriodSeconds is a payload page interval of 2..3600 seconds, default 5; AdvIntervalMs requests BLE repetition every 100..10240 ms while active, default 200, rounded to 0.625 ms units. Neither changes sensor acquisition, and readings are cached. Whole groups of repeated BTHome object IDs stay together in channel-index order; pages rotate when groups do not all fit, so each group's nominal refresh is page count times PeriodSeconds. Oversized or invalid groups are withheld with diagnostics, never split or partially published. <br />The existing configured hostname preference (flag 29) selects long or short device name, falling back to the other configured name if empty. Every primary advertisement includes this name; names beyond the fixed legacy name budget are shortened at a complete UTF-8 boundary and reported. Both names empty or invalid UTF-8 disables advertising. Unsupported/ambiguous channel types and native power-meter/Battery readings outside channels are not automatically published. Timing stays in RAM; rerun setup in autoexec.bat after each restart. Payload updates can briefly interrupt advertising.",
+	//cmddetail:"descr":"Configure timing and automatically discover supported typed channels: battery percent, temperature, humidity, pressure, illuminance, opening, motion, current, voltage, energy and power, including their handled scaled channel types. The old temperature/humidity channel arguments are no longer accepted. PeriodSeconds is a payload page interval of 2..3600 seconds, default 5; AdvIntervalMs requests BLE repetition every 100..10240 ms while active, default 200, rounded to 0.625 ms units. Neither changes sensor acquisition. Every channel requires a channel API write after boot or type change before its entire repeated-ID group is advertised; an unchanged zero counts. Startup/default/remembered values alone are withheld. Explicit static/virtual values can use setChannel in early.bat or autoexec.bat. This is write readiness, not physical sample-age tracking; existing drivers own acquisition. Whole groups of repeated BTHome object IDs stay together in channel-index order; pages rotate when groups do not all fit, so each group's nominal refresh is page count times PeriodSeconds. Oversized or invalid groups are withheld with diagnostics, never split or partially published. <br />The existing configured hostname preference (flag 29) selects long or short device name, falling back to the other configured name if empty. Every primary advertisement includes this name; names beyond the fixed legacy name budget are shortened at a complete UTF-8 boundary and reported. Both names empty or invalid UTF-8 disables advertising. Unsupported/ambiguous channel types and native power-meter/Battery readings outside channels are not automatically published. Timing stays in RAM; rerun setup in autoexec.bat after each restart. Payload updates can briefly interrupt advertising.",
 	//cmddetail:"fn":"BTHome_Setup","file":"driver/drv_bthome.c","requires":"ENABLE_DRIVER_BTHOME",
 	//cmddetail:"examples":"BTHome_Setup 5 200 <br />Use timing defaults: BTHome_Setup <br />Startup example in autoexec.bat: <br />setChannelType 0 Temperature_div10 <br />setChannelType 1 Humidity <br />startDriver BTHome <br />BTHome_Setup 5 200"}
 	CMD_RegisterCommand("BTHome_Setup", BTHome_Setup, NULL);
@@ -473,6 +477,17 @@ void BTHome_OnEverySecond(void) {
 	unsigned int object;
 	int i;
 
+	if (Main_IsDeepSleepPending()) {
+		s_bthome.sleepPaused = true;
+		s_bthome.awaitingStart = false;
+		s_bthome.awaitingStop = false;
+		return;
+	}
+	if (s_bthome.sleepPaused) {
+		s_bthome.sleepPaused = false;
+		s_bthome.secondsRemaining = 0;
+		s_bthome.awaitingStop = true;
+	}
 	if (!s_bthome.running || !s_bthome.configured) {
 		return;
 	}
@@ -543,6 +558,10 @@ void BTHome_OnEverySecond(void) {
 			continue;
 		}
 		bytes = BTHome_EncodeGroup(object, group, &invalidChannel);
+		if (bytes == -2) {
+			ADDLOG_DEBUG(LOG_FEATURE_DRV, "BTHome: awaiting first channel write object=0x%02X channel=%d; whole group withheld", s_objects[object].id, invalidChannel);
+			continue;
+		}
 		if (bytes <= 0 || bytes != s_bthome.counts[object] * (s_objects[object].width + 1)
 			|| length + bytes > BTHOME_ADV_MAX_BYTES) {
 			if (!(s_bthome.invalidGroups & (1U << object))) {

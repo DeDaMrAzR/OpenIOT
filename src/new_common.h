@@ -1371,6 +1371,12 @@ bool Main_HasFastConnect();
 void Main_OnEverySecond();
 int Main_HasMQTTConnected();
 int Main_HasWiFiConnected();
+// Station policy and sleep requests run on the main one-second task.
+int Main_RequestWiFiStationPower(int mode, int restoreSeconds);
+void Main_PrintWiFiStationPower(void);
+int Main_WiFiStationIsOff(void);
+int Main_IsDeepSleepPending(void);
+int Main_RequestTimedDeepSleep(unsigned int seconds);
 void Main_OnPingCheckerReply(int ms);
 
 // new_ping.c

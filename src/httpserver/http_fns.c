@@ -1588,7 +1588,10 @@ int http_fn_cfg_wifi(http_request_t* request) {
 		poststr(request,"<h4> Device will reconnect after restarting</h4>");
 	}*/
 	poststr(request, "<h2> Check networks reachable by module</h2> This will take a few seconds<br>");
-	if (http_getArg(request->url, "scan", tmpA, sizeof(tmpA))) {
+	if (http_getArg(request->url, "scan", tmpA, sizeof(tmpA)) && Main_WiFiStationIsOff()) {
+		poststr(request, "WiFi is intentionally off; use WiFiStation on before scanning.<br>");
+	}
+	else if (http_getArg(request->url, "scan", tmpA, sizeof(tmpA))) {
 #ifdef WINDOWS
 
 		poststr(request, "Not available on Windows<br>");
@@ -3454,7 +3457,7 @@ const char* g_obk_flagNames[] = {
 	"[HTTP] Hide ON/OFF for relays (only red/green buttons)",
 	"[MQTT] Never add GET suffix",
 	"[WiFi] (RTL/BK/BL602) Enhanced fast connect by saving AP data to flash (preferable with Flag 37 & static ip). Quick reset 3 times to connect normally",
-	"error",
+	"[WiFi] Persistent station off (BK7231N + BTHome); safe mode bypasses, WiFiStation on clears",
 	"error",
 	"error",
 	"error",

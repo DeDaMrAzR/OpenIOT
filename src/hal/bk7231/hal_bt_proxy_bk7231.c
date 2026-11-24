@@ -16,6 +16,13 @@
 #include "ble_api.h"
 #if ENABLE_DRIVER_BTHOME
 #include "app_ble.h"
+#if PLATFORM_BK7231N && CFG_USE_PTA && CFG_USE_STA_PS
+#include "power_save_pub.h"
+#include "sys_ctrl_pub.h"
+#include "wlan_ui_pub.h"
+#include "rw_pub.h"
+extern UINT32 sta_rf_sleeped;
+#endif
 #endif
 
 #if !PLATFORM_BK7238
@@ -65,6 +72,39 @@ static unsigned int s_advWaitTime;
 static unsigned int s_advCompleted;
 static unsigned int s_advFailures;
 static bool s_advBusy;
+#if PLATFORM_BK7231N && CFG_USE_PTA && CFG_USE_STA_PS
+static bool s_bleRfHeld;
+static bool s_bleInitStaWake;
+static uint8_t s_scanRetiredIndex = 0xFF;
+
+static void HAL_BT_ClearWakeStaHoldIfNoVIF(void) {
+	GLOBAL_INT_DECLARATION();
+	GLOBAL_INT_DISABLE();
+	if (rwm_mgmt_is_vif_first_used() == NULL) {
+		power_save_rf_hold_bit_clear(RF_HOLD_BY_STA_BIT);
+	}
+	GLOBAL_INT_RESTORE();
+}
+
+// Called only under the platform mutex, after SDK initialization completed.
+static void HAL_BT_AcquireRF(void) {
+	if (sta_rf_sleeped && sctrl_if_rf_sleep()) {
+		sctrl_sta_rf_wakeup();
+		s_bleInitStaWake = true;
+		ADDLOG_DEBUG(LOG_FEATURE_DRV, "BLE RF: SDK wake restored MAC before BLE restart; reapply MAC sleep after advertising is active");
+	}
+	if (!s_bleRfHeld) {
+		power_save_rf_hold_bit_set(RF_HOLD_BY_BLE_BIT);
+		s_bleRfHeld = true;
+		ADDLOG_DEBUG(LOG_FEATURE_DRV, "BLE RF: acquired native BLE hold after SDK READY");
+	}
+	if (s_bleInitStaWake) {
+		// A real STA/AP role takes over its own hold; never clear that owner's bit.
+		HAL_BT_ClearWakeStaHoldIfNoVIF();
+		s_bleInitStaWake = false;
+	}
+}
+#endif
 
 static bool HAL_BT_AdvEnsureMutex(void)
 {
@@ -126,6 +166,8 @@ static void HAL_BT_AdvCommandComplete(ble_cmd_t cmd, ble_cmd_param_t *param)
 	rtos_unlock_mutex(&s_advMutex);
 }
 
+static bool s_deepSleepFence;
+
 int HAL_BT_AdvSubmit(const uint8_t *data, int length, uint16_t interval)
 {
 	if (!data || length < 1 || length > 31 || interval < 160 || interval > 16384) {
@@ -135,7 +177,7 @@ int HAL_BT_AdvSubmit(const uint8_t *data, int length, uint16_t interval)
 		return -1;
 	}
 	rtos_lock_mutex(&s_advMutex);
-	if (s_advState < 0 || s_advError == -3 || g_bt_proxy.scan_active) {
+	if (s_deepSleepFence || s_advState < 0 || s_advError == -3 || g_bt_proxy.scan_active) {
 		int result = s_advState < 0 || s_advError == -3 ? -1 : 0;
 		rtos_unlock_mutex(&s_advMutex);
 		return result;
@@ -189,6 +231,87 @@ int HAL_BT_AdvGetState(int *error)
 }
 #endif
 
+#if ENABLE_DRIVER_BTHOME && PLATFORM_BK7231N
+int HAL_BT_AdvRFHoldOwned(void) {
+#if CFG_USE_PTA && CFG_USE_STA_PS
+	int held;
+	if (!s_advMutexReady) {
+		return 0;
+	}
+	rtos_lock_mutex(&s_advMutex);
+	held = s_bleRfHeld;
+	rtos_unlock_mutex(&s_advMutex);
+	return held;
+#else
+	return 0;
+#endif
+}
+
+int HAL_BT_DeepSleepReady(int start) {
+#if CFG_USE_PTA && CFG_USE_STA_PS
+	int ready, failed;
+	if (!HAL_BT_AdvEnsureMutex()) {
+		return -1;
+	}
+	rtos_lock_mutex(&s_advMutex);
+	if (start < 0) {
+		s_deepSleepFence = false;
+		rtos_unlock_mutex(&s_advMutex);
+		return 0;
+	}
+	if (start) {
+		s_deepSleepFence = true;
+		s_advWanted = false;
+		s_advWaitTime = g_timeMs;
+	}
+	rtos_unlock_mutex(&s_advMutex);
+	if (start) {
+		HAL_BTProxy_StopScan();
+	}
+	rtos_lock_mutex(&s_advMutex);
+	failed = s_advState < 0 || s_advError < 0;
+	ready = s_deepSleepFence && !s_advWanted && !s_advPending && s_advState == 0 && s_advIndex == 0xFF
+		&& !g_bt_proxy.scan_active && s_scanRetiredIndex == 0xFF && !s_bleRfHeld
+		&& !s_bleInitStaWake;
+	if (g_bleStackReady && app_ble_env_state_get() != APP_BLE_READY) {
+		ready = 0;
+	}
+	rtos_unlock_mutex(&s_advMutex);
+	return failed ? -1 : ready;
+#else
+	(void)start;
+	return -1;
+#endif
+}
+
+int HAL_BT_AdvWiFiStopReady(int activeRequired) {
+#if CFG_USE_PTA && CFG_USE_STA_PS
+	int ready;
+	if (!HAL_BT_AdvEnsureMutex()) {
+		return 0;
+	}
+	rtos_lock_mutex(&s_advMutex);
+	ready = s_advState >= 0 && s_advError >= 0 && !g_bt_proxy.scan_active
+		&& s_scanRetiredIndex == 0xFF;
+	if (activeRequired) {
+		ready = ready && g_bleStackReady && app_ble_env_state_get() == APP_BLE_READY
+			&& s_advState == 2 && !s_advPending && s_advWanted && s_bleRfHeld;
+	}
+	if (ready && (s_advWanted || s_advPending || s_advState != 0)) {
+		ready = app_ble_env_state_get() == APP_BLE_READY || s_bleRfHeld;
+		if (ready && !s_bleRfHeld) {
+			HAL_BT_AcquireRF();
+		}
+	}
+	rtos_unlock_mutex(&s_advMutex);
+	return ready;
+#else
+	(void)activeRequired;
+	return 0;
+#endif
+}
+#endif
+
 static void hal_bt_gap_callback(ble_notice_t notice, void* param)
 {
 #if ENABLE_DRIVER_BTHOME
@@ -218,6 +341,14 @@ static void HAL_BTScan_EnsureStackReady()
 		return;
 	}
 
+#if ENABLE_DRIVER_BTHOME && PLATFORM_BK7231N && CFG_USE_PTA && CFG_USE_STA_PS
+	if (sta_rf_sleeped && sctrl_if_rf_sleep()) {
+		// Retain the SDK wake's STA hold through asynchronous RF initialization.
+		sctrl_sta_rf_wakeup();
+		s_bleInitStaWake = true;
+		ADDLOG_DEBUG(LOG_FEATURE_DRV, "BLE RF: waking SDK MAC/RF before stack initialization");
+	}
+#endif
 	extern void ble_entry(void);
 	ble_set_notice_cb(hal_bt_gap_callback);
 	ble_entry();
@@ -232,7 +363,7 @@ void HAL_BTProxy_StartScan()
 		return;
 	}
 	rtos_lock_mutex(&s_advMutex);
-	if (s_advWanted || s_advPending || s_advIndex != 0xFF) {
+	if (s_deepSleepFence || s_advWanted || s_advPending || s_advIndex != 0xFF) {
 		rtos_unlock_mutex(&s_advMutex);
 		ADDLOG_ERROR(LOG_FEATURE_GENERAL, "BLE scan: BTHome owns advertising activity; stop it first");
 		return;
@@ -274,6 +405,15 @@ void HAL_BTProxy_StartScan()
 			return;
 		}
 
+#if ENABLE_DRIVER_BTHOME && PLATFORM_BK7231N && CFG_USE_PTA && CFG_USE_STA_PS
+		if (app_ble_env_state_get() != APP_BLE_READY || s_scanRetiredIndex != 0xFF) {
+			g_bleScanActvIdx = 0xFF;
+			rtos_unlock_mutex(&s_advMutex);
+			ADDLOG_ERROR(LOG_FEATURE_DRV, "BLE scan: SDK not READY or prior deletion pending");
+			return;
+		}
+		HAL_BT_AcquireRF();
+#endif
 		ret = bk_ble_scan_start(g_bleScanActvIdx, &scan, NULL);
 		if(ret != ERR_SUCCESS)
 		{
@@ -326,6 +466,9 @@ void HAL_BTProxy_StopScan()
 #endif
 			return;
 		}
+#if ENABLE_DRIVER_BTHOME && PLATFORM_BK7231N && CFG_USE_PTA && CFG_USE_STA_PS
+		s_scanRetiredIndex = g_bleScanActvIdx;
+#endif
 		g_bleScanActvIdx = 0xFF;
 		g_bt_proxy.scan_active = false;
 	}
@@ -422,6 +565,36 @@ void HAL_BTProxy_OnEverySecond(void)
 		return;
 	}
 	rtos_lock_mutex(&s_advMutex);
+#if PLATFORM_BK7231N && CFG_USE_PTA && CFG_USE_STA_PS
+	if (g_bleStackReady && app_ble_env_state_get() == APP_BLE_READY) {
+		if (s_bleInitStaWake) {
+			HAL_BT_AcquireRF();
+		}
+		if (s_scanRetiredIndex < BLE_ACTIVITY_MAX
+			&& app_ble_env.actvs[s_scanRetiredIndex].actv_status == ACTV_IDLE) {
+			s_scanRetiredIndex = 0xFF;
+		}
+		if (s_bleRfHeld && !s_advWanted && !s_advPending && s_advState == 0
+			&& s_advIndex == 0xFF && !g_bt_proxy.scan_active && s_scanRetiredIndex == 0xFF) {
+			int wokeMac = sta_rf_sleeped != 0;
+			if (wokeMac) {
+				// Leave MAC awake before shared RF can sleep: later ADC/SDK wakeups
+				// must not reinitialize WiFi PHY against a gated MAC.
+				sctrl_sta_rf_wakeup();
+			}
+			if (!sta_rf_sleeped) {
+				power_save_rf_hold_bit_clear(RF_HOLD_BY_BLE_BIT);
+				s_bleRfHeld = false;
+				if (wokeMac) {
+					HAL_BT_ClearWakeStaHoldIfNoVIF();
+				}
+				ADDLOG_DEBUG(LOG_FEATURE_DRV, "BLE RF: released native hold after confirmed cleanup; MACwoken=%d", wokeMac);
+			} else {
+				ADDLOG_ERROR(LOG_FEATURE_DRV, "BLE RF: SDK MAC wake incomplete; retaining hold after cleanup");
+			}
+		}
+	}
+#endif
 	if (s_advPending) {
 		if (g_timeMs - s_advCommandTime >= 10000 && s_advError != -3) {
 			// A timeout cannot release an SDK-owned activity or its late callback.
@@ -485,6 +658,9 @@ void HAL_BTProxy_OnEverySecond(void)
 			uint32_t operations = (1U << BLE_OP_CREATE_ADV_POS)
 				| (1U << BLE_OP_SET_ADV_DATA_POS)
 				| (1U << BLE_OP_START_ADV_POS);
+#if PLATFORM_BK7231N && CFG_USE_PTA && CFG_USE_STA_PS
+			HAL_BT_AcquireRF();
+#endif
 			app_ble_run(s_advIndex, BLE_INIT_ADV, operations, HAL_BT_AdvCommandComplete);
 			memcpy(&app_ble_env.actvs[s_advIndex].param.adv, &s_advRequest, sizeof(s_advRequest));
 			result = app_ble_create_advertising(s_advIndex, &s_advRequest);

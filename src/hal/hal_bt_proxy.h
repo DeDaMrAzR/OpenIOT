@@ -86,8 +86,15 @@ int HAL_BT_AdvSubmit(const uint8_t *data, int length, uint16_t interval);
 void HAL_BT_AdvStop(void);
 // State: 0 idle, 1 starting, 2 active, 3 stopping, -1 failed. Error is SDK/local code.
 int HAL_BT_AdvGetState(int *error);
+#if defined(PLATFORM_BEKEN_NEW) && defined(PLATFORM_BK7231N)
+// Platform-local safety check; activeRequired additionally requires a stable advertiser.
+int HAL_BT_AdvWiFiStopReady(int activeRequired);
+int HAL_BT_AdvRFHoldOwned(void);
+int HAL_BT_DeepSleepReady(int start);
+#endif
 #if !ENABLE_BT_PROXY
 void HAL_BTProxy_OnEverySecond(void);
+void HAL_BTProxy_StopScan(void);
 #endif
 #endif
 #endif // __HAL_BT_PROXY_H__

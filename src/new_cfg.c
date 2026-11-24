@@ -451,6 +451,7 @@ bool CHANNEL_GetGenericPressure(float *out) {
 }
 void CHANNEL_SetType(int ch, int type) {
 	if (g_cfg.pins.channelTypes[ch] != type) {
+		CHANNEL_InvalidateValue(ch);
 		g_cfg.pins.channelTypes[ch] = type;
 		g_cfg_pendingChanges++;
 	}

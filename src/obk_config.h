@@ -446,6 +446,11 @@
 #define ENABLE_DRIVER_ESPHOME_API				1
 #endif
 
+#if PLATFORM_BEKEN_NEW && PLATFORM_BK7231N
+// Optional ordinary driver; the builder discovers this flag without a new variant.
+//#define ENABLE_DRIVER_BTHOME					1
+#endif
+
 #elif PLATFORM_LN882H
 
 //#define ENABLE_SEND_POSTANDGET				1

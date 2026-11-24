@@ -369,3 +369,7 @@ void TinyIR_NEC_RunFrame();
 void DRV_ESPHome_API_Init();
 void DRV_ESPHome_API_Deinit();
 void DRV_ESPHome_API_OnEverySecond();
+
+void BTHome_Init(void);
+void BTHome_OnEverySecond(void);
+void BTHome_Stop(void);

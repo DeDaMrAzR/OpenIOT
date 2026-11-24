@@ -22,6 +22,7 @@ int UART_PORT_INDEX = 1;
 #endif
 #if PLATFORM_BEKEN_NEW
 #include "uart.h"
+#include "uart_pub.h"
 #include "arm_arch.h"
 #undef PLATFORM_BEKEN
 #elif PLATFORM_LN882H
@@ -167,7 +168,7 @@ static int tcpLogStarted = 0;
 
 commandResult_t log_command(const void* context, const char* cmd, const char* args, int cmdFlags);
 
-#if PLATFORM_BEKEN || PLATFORM_LN882H || PLATFORM_GD32VW553 || PLATFORM_ARMINO
+#if PLATFORM_BEKEN || PLATFORM_BEKEN_NEW || PLATFORM_LN882H || PLATFORM_GD32VW553 || PLATFORM_ARMINO
 
 commandResult_t log_port(const void* context, const char* cmd, const char* args, int cmdFlags)
 {
@@ -183,8 +184,22 @@ commandResult_t log_port(const void* context, const char* cmd, const char* args,
 		return CMD_RES_NOT_ENOUGH_ARGUMENTS;
 	}
 
+#if !PLATFORM_BEKEN_NEW
 	idx = Tokenizer_GetArgInteger(0);
-#if PLATFORM_BEKEN
+#endif
+#if PLATFORM_BEKEN_NEW
+	// The newer SDK routes both application and SDK printf through this exported
+	// selector. Keep UART initialization separate, as with the legacy command.
+	const char *portArg = Tokenizer_GetArg(0);
+	char *portEnd;
+	long port = strtol(portArg, &portEnd, 10);
+	if (Tokenizer_GetArgsCount() != 1 || portEnd == portArg || *portEnd || (port != 1 && port != 2))
+	{
+		return CMD_RES_BAD_ARGUMENT;
+	}
+	idx = (int)port;
+	uart_print_port = idx == 1 ? UART1_PORT : UART2_PORT;
+#elif PLATFORM_BEKEN
 	switch (idx)
 	{
 		case 1:
@@ -342,7 +357,7 @@ static void initLog(void)
 	//cmddetail:"examples":"logStartup2lfs 15"}
 	CMD_RegisterCommand("logStartup2lfs", CMD_logStartup2lfs, NULL);
 #endif
-#if PLATFORM_BEKEN || PLATFORM_LN882H || PLATFORM_GD32VW553 || PLATFORM_ARMINO
+#if PLATFORM_BEKEN || PLATFORM_BEKEN_NEW || PLATFORM_LN882H || PLATFORM_GD32VW553 || PLATFORM_ARMINO
 	//cmddetail:{"name":"logport","args":"[Index]",
 	//cmddetail:"descr":"Allows you to change log output port. On Beken, the UART1 is used for flashing and for TuyaMCU/BL0942, while UART2 is for log. Sometimes it might be easier for you to have log on UART1, so now you can just use this command like backlog uartInit 115200; logport 1 to enable logging on UART1..",
 	//cmddetail:"fn":"log_port","file":"logging/logging.c","requires":"",

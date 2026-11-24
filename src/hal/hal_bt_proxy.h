@@ -77,4 +77,17 @@ void HAL_BTProxy_RegisterPlatformCommands(void);
 void HAL_BTProxy_RegisterCommands(void);
 
 #endif // ENABLE_BT_PROXY
+#if ENABLE_DRIVER_BTHOME
+#include <stdint.h>
+
+// One copied legacy payload, in 0.625 ms interval units; no SDK pointers escape.
+// Submit: 1 accepted, 0 busy, -1 invalid/unsupported. Stop is asynchronous.
+int HAL_BT_AdvSubmit(const uint8_t *data, int length, uint16_t interval);
+void HAL_BT_AdvStop(void);
+// State: 0 idle, 1 starting, 2 active, 3 stopping, -1 failed. Error is SDK/local code.
+int HAL_BT_AdvGetState(int *error);
+#if !ENABLE_BT_PROXY
+void HAL_BTProxy_OnEverySecond(void);
+#endif
+#endif
 #endif // __HAL_BT_PROXY_H__

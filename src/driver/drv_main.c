@@ -1641,6 +1641,22 @@ static driver_t g_drivers[] = {
 	false,                                   // loaded
 	},
 #endif
+#if ENABLE_DRIVER_BTHOME
+	//drvdetail:{"name":"BTHome",
+	//drvdetail:"title":"BTHome v2 BLE transmitter",
+	//drvdetail:"descr":"Broadcast supported typed channels and the configured device name over BLE. BTHome_Setup configures timing; channel types supply measurement meaning and scaling.",
+	//drvdetail:"requires":"ENABLE_DRIVER_BTHOME"}
+	{ "BTHome",                              // Driver Name
+	BTHome_Init,                             // Init
+	BTHome_OnEverySecond,                    // onEverySecond
+	NULL,                                    // appendInformationToHTTPIndexPage
+	NULL,                                    // runQuickTick
+	BTHome_Stop,                             // stopFunction
+	NULL,                                    // onChannelChanged
+	NULL,                                    // onHassDiscovery
+	false,                                   // loaded
+	},
+#endif
 #if ENABLE_DRIVER_VKL060
 	//drvdetail:{"name":"VKL060",
 	//drvdetail:"title":"TODO",

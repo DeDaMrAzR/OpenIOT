@@ -59,3 +59,43 @@ BERRY_SRCPATH = $(OBK_DIR)/../libraries/berry/src
 include $(OBK_DIR)/../libraries/berry.mk
 
 APP_C += $(BERRY_SRC_C)
+
+# Compiler flags are not prerequisites in the SDK. Track the effective version
+# after all application sources are collected, including C++ and Berry sources.
+OBK_APP_VERSION_STAMP := $(OBJ_DIR)/.obk_app_version
+ifdef USER_SW_VER
+export OBK_APP_VERSION_STAMP_VALUE := $(USER_SW_VER)
+else
+export OBK_APP_VERSION_STAMP_VALUE := $(APP_VERSION)
+endif
+
+# Snapshot before the stamp recipe updates it. A conditional phony prerequisite
+# handles equal/coarse timestamps without deleting objects whose mtimes make may
+# already have cached. Reading the prior stamp has no parse-time side effects.
+OBK_APP_VERSION_CHANGED := $(shell if [ ! -f "$(OBK_APP_VERSION_STAMP)" ] || ! printf '%s\n' '$(subst ','"'"',$(OBK_APP_VERSION_STAMP_VALUE))' | cmp -s - "$(OBK_APP_VERSION_STAMP)"; then printf '%s' 1; fi)
+
+.PHONY: obk_app_version_check
+obk_app_version_check:
+
+$(OBK_APP_VERSION_STAMP): obk_app_version_check
+	@set -eu; \
+	mkdir -p "$(OBJ_DIR)"; \
+	stamp_tmp="$@.tmp.$$$$"; \
+	trap 'rm -f "$$stamp_tmp"' 0; \
+	trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+	printf '%s\n' "$$OBK_APP_VERSION_STAMP_VALUE" > "$$stamp_tmp"; \
+	if [ ! -f "$@" ] || ! cmp -s "$$stamp_tmp" "$@"; then \
+		mv -f "$$stamp_tmp" "$@"; \
+	else \
+		rm -f "$$stamp_tmp"; \
+	fi
+
+# The shared stamp executes once before app compiles under parallel make. Only
+# a changed/missing version adds a force dependency for this invocation; SDK
+# libraries and final firmware artifacts are not included in this rule.
+$(OBJ_APP_LIST) $(OBJ_CXX_LIST): $(OBK_APP_VERSION_STAMP)
+ifeq ($(OBK_APP_VERSION_CHANGED),1)
+.PHONY: obk_app_version_changed
+obk_app_version_changed:
+$(OBJ_APP_LIST) $(OBJ_CXX_LIST): obk_app_version_changed
+endif

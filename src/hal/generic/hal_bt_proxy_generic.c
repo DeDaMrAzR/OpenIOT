@@ -8,6 +8,25 @@
 
 //static SemaphoreHandle_t scan_mutex = NULL;
 
+#if ENABLE_DRIVER_BTHOME
+int __attribute__((weak)) HAL_BT_AdvSubmit(const uint8_t *data, int length, uint16_t interval)
+{
+	return -1;
+}
+
+void __attribute__((weak)) HAL_BT_AdvStop(void)
+{
+}
+
+int __attribute__((weak)) HAL_BT_AdvGetState(int *error)
+{
+	if (error) {
+		*error = -1;
+	}
+	return -1;
+}
+#endif
+
 void __attribute__((weak)) HAL_BTProxy_StartScan()
 {
 

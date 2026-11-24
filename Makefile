@@ -810,17 +810,22 @@ OpenBK7252N: prebuild_OpenBK7252N
 
 .PHONY: OpenBK7231N_ALT
 OpenBK7231N_ALT: prebuild_OpenBK7231N_ALT
-ifeq ($(OBK_VARIANT), 8)
-	cd sdk/beken_freertos_sdk && \
-	cp -f beken378/app/config/sys_config_bk7231n.h beken378/app/config/sys_config_bk7231n.h.bak && \
-	sed -i 's/#if 0\/\/BTPROXY/#if 1/' beken378/app/config/sys_config_bk7231n.h && \
-	ARM_GCC_TOOLCHAIN=$(PWD)/sdk/beken_freertos_sdk/toolchain/arm-none-eabi/bin/ OBK_VARIANT=$(OBK_VARIANT) sh build.sh bk7231n $(APP_VERSION)_ALT; \
-	rc=$$?; \
-	mv -f beken378/app/config/sys_config_bk7231n.h.bak beken378/app/config/sys_config_bk7231n.h; \
-	exit $$rc
-else
-	cd sdk/beken_freertos_sdk && ARM_GCC_TOOLCHAIN=$(PWD)/sdk/beken_freertos_sdk/toolchain/arm-none-eabi/bin/ OBK_VARIANT=$(OBK_VARIANT) sh build.sh bk7231n $(APP_VERSION)_ALT
-endif
+	# Read the effective application flag, including the Docker builder's selected-driver header.
+	# Capture the preprocessor status before matching macros so configuration errors fail closed.
+	ble_macros=$$("$(PWD)/sdk/beken_freertos_sdk/toolchain/arm-none-eabi/bin/arm-none-eabi-gcc" \
+		-E -dM -x c -DPLATFORM_BEKEN=1 -DPLATFORM_BEKEN_NEW=1 -DPLATFORM_BK7231N=1 \
+		-DOBK_VARIANT=$(OBK_VARIANT) src/obk_config.h) || exit $$?; \
+	if [ "$(OBK_VARIANT)" = "8" ] || printf '%s\n' "$$ble_macros" | grep -Eq '^#define ENABLE_DRIVER_BTHOME[[:space:]]+1$$'; then \
+		cd sdk/beken_freertos_sdk || exit $$?; \
+		cp -f beken378/app/config/sys_config_bk7231n.h beken378/app/config/sys_config_bk7231n.h.bak || exit $$?; \
+		trap 'rc=$$?; trap - 0 HUP INT TERM; mv -f beken378/app/config/sys_config_bk7231n.h.bak beken378/app/config/sys_config_bk7231n.h || exit 1; exit $$rc' 0; \
+		trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM; \
+		sed -i 's/#if 0\/\/BTPROXY/#if 1/' beken378/app/config/sys_config_bk7231n.h || exit $$?; \
+		ARM_GCC_TOOLCHAIN=$(PWD)/sdk/beken_freertos_sdk/toolchain/arm-none-eabi/bin/ OBK_VARIANT=$(OBK_VARIANT) sh build.sh bk7231n $(APP_VERSION)_ALT; \
+		exit $$?; \
+	else \
+		cd sdk/beken_freertos_sdk && ARM_GCC_TOOLCHAIN=$(PWD)/sdk/beken_freertos_sdk/toolchain/arm-none-eabi/bin/ OBK_VARIANT=$(OBK_VARIANT) sh build.sh bk7231n $(APP_VERSION)_ALT; \
+	fi
 	mkdir -p output/$(APP_VERSION)
 	cp sdk/beken_freertos_sdk/out/bk7231n_QIO.bin output/$(APP_VERSION)/OpenBK7231N_ALT_QIO_${APP_VERSION}.bin
 	cp sdk/beken_freertos_sdk/out/bk7231n.bin output/$(APP_VERSION)/OpenBK7231N_ALT_${APP_VERSION}.bin
